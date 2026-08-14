@@ -60,8 +60,16 @@ val prepareNativeCore by tasks.registering(Exec::class) {
     commandLine("sh", "${rootProject.projectDir}/scripts/build-native-core.sh")
 }
 
+val verifyReleaseNativeTrust by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir)
+    commandLine("sh", "${rootProject.projectDir}/scripts/verify-release-native-trust.sh")
+}
+
 tasks.configureEach {
     if (name.startsWith("configureCMake") || name.startsWith("buildCMake")) {
         dependsOn(prepareNativeCore)
+    }
+    if (name == "preReleaseBuild") {
+        dependsOn(verifyReleaseNativeTrust)
     }
 }

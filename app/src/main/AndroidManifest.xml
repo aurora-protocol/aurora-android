@@ -2,5 +2,6 @@
     <application
         android:allowBackup="false"
         android:label="Aurora"
+        android:name=".AuroraApplication"
         android:supportsRtl="true" />
 </manifest>

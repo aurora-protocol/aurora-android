@@ -2,6 +2,8 @@ package org.aurora.protocol.android.core
 
 import java.net.URL
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -109,6 +111,30 @@ class NativeSessionControllerTest {
         assertArrayEquals(ByteArray(provisioning.size), provisioning)
     }
 
+    @Test
+    fun closeCancelsAnInFlightIssuerExchange() {
+        val core = FakeCore(issuerWorkPayload(byteArrayOf(0x30)))
+        val issuer = BlockingIssuerExchange()
+        val controller = NativeSessionController(core, issuer)
+        val result = arrayOfNulls<Throwable>(1)
+        val worker = Thread {
+            try {
+                controller.establish(byteArrayOf(0x10))
+            } catch (error: Throwable) {
+                result[0] = error
+            }
+        }
+
+        worker.start()
+        assertTrue(issuer.started.await(2, TimeUnit.SECONDS))
+        controller.close()
+        worker.join(2_000)
+
+        assertTrue(issuer.cancelled)
+        assertTrue(result[0] is IllegalStateException)
+        assertEquals(listOf(7L), core.closedHandles)
+    }
+
     private class FakeCore(
         private val beginPayload: ByteArray,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),
@@ -158,6 +184,23 @@ class NativeSessionControllerTest {
         override fun exchange(work: NativeIssuerWork): ByteArray {
             requestBodyReference = work.requestBody
             throw IllegalStateException("issuer unavailable")
+        }
+    }
+
+    private class BlockingIssuerExchange : CancellableIssuerExchange {
+        val started = CountDownLatch(1)
+        @Volatile var cancelled = false
+
+        override fun exchange(work: NativeIssuerWork): ByteArray {
+            started.countDown()
+            while (!cancelled) {
+                Thread.sleep(10)
+            }
+            throw IllegalStateException("issuer cancelled")
+        }
+
+        override fun cancel() {
+            cancelled = true
         }
     }
 

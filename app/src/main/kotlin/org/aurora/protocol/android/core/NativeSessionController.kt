@@ -67,13 +67,16 @@ internal class NativeSessionController(
             work?.close()
             if (!established) {
                 val handle = work?.handle ?: 0L
-                synchronized(lock) {
+                val shouldClose = synchronized(lock) {
                     if (generation == ownGeneration) {
                         pendingHandle = 0L
                         starting = false
+                        true
+                    } else {
+                        false
                     }
                 }
-                if (handle != 0L) {
+                if (shouldClose && handle != 0L) {
                     core.closeNativeSession(handle)
                 }
             }
@@ -95,6 +98,7 @@ internal class NativeSessionController(
     override fun nextLocalPacket(): ByteArray = core.nextLocalPacket(establishedHandle())
 
     override fun close() {
+        (issuer as? CancellableIssuerExchange)?.cancel()
         val handle = synchronized(lock) {
             ++generation
             closed = true

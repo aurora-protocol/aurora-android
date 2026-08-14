@@ -9,6 +9,10 @@ internal interface IssuerExchange {
     fun exchange(work: NativeIssuerWork): ByteArray
 }
 
+internal interface CancellableIssuerExchange : IssuerExchange {
+    fun cancel()
+}
+
 internal data class IssuerHttpResponse(
     val statusCode: Int,
     val contentLength: Long,
@@ -27,20 +31,52 @@ internal class HttpsIssuerExchange(
     private val connectionFactory: IssuerHttpConnectionFactory = IssuerHttpConnectionFactory { endpoint ->
         HttpsIssuerHttpConnection(endpoint)
     },
-) : IssuerExchange {
+) : CancellableIssuerExchange {
+    private val exchangeLock = Any()
+    private var activeConnection: IssuerHttpConnection? = null
+    private var cancelled = false
+
     override fun exchange(work: NativeIssuerWork): ByteArray {
         require(work.handle > 0) { "invalid issuer handle" }
         require(work.requestBody.isNotEmpty() && work.requestBody.size <= maximumIssuerRequestBytes) {
             "invalid issuer request body"
         }
         val endpoint = endpointFor(work)
-        connectionFactory.open(endpoint).use { connection ->
+        val connection = connectionFactory.open(endpoint)
+        val accepted = synchronized(exchangeLock) {
+            if (cancelled) {
+                false
+            } else {
+                activeConnection = connection
+                true
+            }
+        }
+        if (!accepted) {
+            connection.close()
+            throw IllegalStateException("issuer exchange was cancelled")
+        }
+        try {
             val response = connection.post(work.requestBody)
             require(response.statusCode == HttpsURLConnection.HTTP_OK) { "issuer rejected request" }
             require(response.contentLength in -1..maximumIssuerResponseBytes.toLong()) { "issuer response exceeds size limit" }
             val body = response.body ?: throw IllegalStateException("issuer response body is unavailable")
             return body.use { readBounded(it) }
+        } finally {
+            synchronized(exchangeLock) {
+                if (activeConnection === connection) {
+                    activeConnection = null
+                }
+            }
+            connection.close()
         }
+    }
+
+    override fun cancel() {
+        val connection = synchronized(exchangeLock) {
+            cancelled = true
+            activeConnection
+        }
+        connection?.close()
     }
 
     internal fun endpointFor(work: NativeIssuerWork): URL {

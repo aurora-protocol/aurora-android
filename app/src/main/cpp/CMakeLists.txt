@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(aurora_android_jni C)
 
-set(AURORA_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../jniLibs/${ANDROID_ABI}")
+set(AURORA_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../build/generated/auroracore/${ANDROID_ABI}")
 
 add_library(auroracore SHARED IMPORTED GLOBAL)
 set_target_properties(auroracore PROPERTIES

@@ -1,0 +1,1 @@
+-keep class org.aurora.protocol.android.core.NativeCoreJni { *; }

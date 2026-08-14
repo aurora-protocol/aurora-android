@@ -1,6 +1,8 @@
 .worktrees/
 .gradle/
+local.properties
 build/
 app/build/
+app/.cxx/
 app/src/main/jniLibs/
 app/src/main/assets/AuroraSignedSeedTrust.bin

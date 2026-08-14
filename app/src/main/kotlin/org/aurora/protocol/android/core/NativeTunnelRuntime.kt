@@ -2,7 +2,8 @@ package org.aurora.protocol.android.core
 
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicReference
 
 internal interface TunnelPacketDevice : AutoCloseable {
     fun readPacket(): ByteArray?
@@ -15,24 +16,33 @@ internal class NativeTunnelRuntime(
     private val workers: ExecutorService = Executors.newFixedThreadPool(2),
     private val onTerminalFailure: (Throwable) -> Unit,
 ) : AutoCloseable {
-    private val active = AtomicBoolean(false)
+    private val state = AtomicReference(RuntimeState.READY)
     private val writeLock = Any()
 
     fun start() {
-        check(active.compareAndSet(false, true)) { "tunnel runtime is already active" }
-        workers.execute(::runIngress)
-        workers.execute(::runEgress)
+        if (!state.compareAndSet(RuntimeState.READY, RuntimeState.RUNNING)) {
+            if (state.get() == RuntimeState.CLOSED) {
+                return
+            }
+            throw IllegalStateException("tunnel runtime is already active")
+        }
+        try {
+            workers.execute(::runIngress)
+            workers.execute(::runEgress)
+        } catch (error: RejectedExecutionException) {
+            if (transitionToClosed()) {
+                throw error
+            }
+        }
     }
 
     override fun close() {
-        if (active.compareAndSet(true, false)) {
-            closeResources()
-        }
+        transitionToClosed()
     }
 
     private fun runIngress() {
         try {
-            while (active.get()) {
+            while (isRunning()) {
                 val packet = device.readPacket() ?: throw IllegalStateException("tunnel input closed")
                 try {
                     val immediatePackets = session.ingressLocalPacket(packet)
@@ -48,7 +58,7 @@ internal class NativeTunnelRuntime(
 
     private fun runEgress() {
         try {
-            while (active.get()) {
+            while (isRunning()) {
                 writePacket(session.nextLocalPacket())
             }
         } catch (error: Throwable) {
@@ -60,7 +70,7 @@ internal class NativeTunnelRuntime(
         try {
             require(packet.isNotEmpty() && packet.size <= maximumPacketBytes) { "invalid Core local packet" }
             synchronized(writeLock) {
-                if (active.get()) {
+                if (isRunning()) {
                     device.writePacket(packet)
                 }
             }
@@ -70,10 +80,19 @@ internal class NativeTunnelRuntime(
     }
 
     private fun fail(error: Throwable) {
-        if (active.compareAndSet(true, false)) {
-            closeResources()
+        if (transitionToClosed()) {
             onTerminalFailure(error)
         }
+    }
+
+    private fun isRunning(): Boolean = state.get() == RuntimeState.RUNNING
+
+    private fun transitionToClosed(): Boolean {
+        if (state.getAndSet(RuntimeState.CLOSED) == RuntimeState.CLOSED) {
+            return false
+        }
+        closeResources()
+        return true
     }
 
     private fun closeResources() {
@@ -90,5 +109,11 @@ internal class NativeTunnelRuntime(
 
     private companion object {
         const val maximumPacketBytes = 65535
+    }
+
+    private enum class RuntimeState {
+        READY,
+        RUNNING,
+        CLOSED,
     }
 }

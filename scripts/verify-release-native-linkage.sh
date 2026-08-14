@@ -3,7 +3,8 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"
-ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_SDK_ROOT:-}/ndk/27.1.12297006}"
+ANDROID_SDK_HOME="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_SDK_HOME}/ndk/27.1.12297006}"
 
 if [ ! -f "$APK" ]; then
     printf 'release APK is unavailable: %s\n' "$APK" >&2

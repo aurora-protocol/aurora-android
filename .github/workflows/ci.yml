@@ -39,7 +39,6 @@ jobs:
         run: ./scripts/write-test-native-trust-resource.sh
       - name: Verify Android client
         env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           AURORA_CORE_DIR: ${{ github.workspace }}/aurora-core
           GOTOOLCHAIN: go1.26.6
           GOCACHE: ${{ github.workspace }}/.cache/go-build

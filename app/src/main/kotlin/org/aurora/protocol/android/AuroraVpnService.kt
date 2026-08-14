@@ -144,7 +144,15 @@ class AuroraVpnService : VpnService() {
         }
     }
 
-    private companion object {
+    companion object {
+        internal fun connect(context: Context) {
+            context.startForegroundService(Intent(context, AuroraVpnService::class.java).setAction(actionConnect))
+        }
+
+        internal fun disconnect(context: Context) {
+            context.startService(Intent(context, AuroraVpnService::class.java).setAction(actionDisconnect))
+        }
+
         const val actionConnect = "org.aurora.protocol.android.action.CONNECT"
         const val actionDisconnect = "org.aurora.protocol.android.action.DISCONNECT"
         const val notificationChannel = "aurora-vpn"

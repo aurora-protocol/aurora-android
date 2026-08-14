@@ -5,7 +5,11 @@ internal class AuroraReservationRepository(
     private val storage: ReservationStore,
 ) {
     fun reserveAndPersist(request: ByteArray, issuedAtUnix: Long) {
-        storage.save(client.reserve(request, issuedAtUnix))
+        try {
+            storage.save(client.reserve(request, issuedAtUnix))
+        } finally {
+            request.fill(0)
+        }
     }
 
     fun load(): CoreReservation? = storage.load()

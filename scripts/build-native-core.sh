@@ -49,13 +49,14 @@ build_abi() {
     (
         cd "$CORE_DIR"
         GOTOOLCHAIN="$GO_TOOLCHAIN" GOCACHE="$GO_CACHE" CGO_ENABLED=1 GOOS=android GOARCH="$goarch" CC="$toolchain/$compiler" \
-            go build -trimpath -buildmode=c-shared -o "$output" ./mobile/auroracore
+            go build -trimpath -buildmode=c-shared -ldflags=-extldflags=-Wl,-soname,libauroracore.so -o "$output" ./mobile/auroracore
     )
     test -s "$output"
     test -s "$header"
     rg -F 'AuroraCoreCall' "$header" >/dev/null
     rg -F 'AuroraCoreZeroFree' "$header" >/dev/null
     "$toolchain/llvm-nm" -D --defined-only "$output" | rg ' AuroraCore(Call|Free|ZeroFree)$' >/dev/null
+    "$toolchain/llvm-readelf" -d "$output" | rg -F 'Library soname: [libauroracore.so]' >/dev/null
 }
 
 build_abi arm64-v8a arm64 aarch64-linux-android26-clang

@@ -46,6 +46,7 @@ jobs:
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
       - name: Verify release package contents
         run: |
+          ./scripts/verify-release-native-linkage.sh
           apk=app/build/outputs/apk/release/app-release-unsigned.apk
           unzip -Z1 "$apk" | grep -Fx 'assets/AuroraSignedSeedTrust.bin'
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libauroracore.so'

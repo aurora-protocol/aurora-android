@@ -29,4 +29,16 @@ class NativeCoreResponseTest {
             NativeCoreResponse.decode(byteArrayOf(2, 0x01))
         }
     }
+
+    @Test
+    fun transfersPayloadOwnershipWithoutClearingTheTransferredPacket() {
+        val response = CoreResponse(CoreStatus.OK, byteArrayOf(0x41, 0x42))
+
+        val packet = response.takePayload()
+        response.close()
+
+        assertArrayEquals(byteArrayOf(0x41, 0x42), packet)
+        assertArrayEquals(ByteArray(0), response.payload)
+        packet.fill(0)
+    }
 }

@@ -14,10 +14,22 @@ internal enum class CoreStatus(val wireValue: Int) {
 
 internal class CoreResponse(
     val status: CoreStatus,
-    val payload: ByteArray,
+    payload: ByteArray,
 ) : AutoCloseable {
+    private var ownedPayload = payload
+
+    val payload: ByteArray
+        get() = ownedPayload
+
+    fun takePayload(): ByteArray {
+        val result = ownedPayload
+        ownedPayload = ByteArray(0)
+        return result
+    }
+
     override fun close() {
-        payload.fill(0)
+        ownedPayload.fill(0)
+        ownedPayload = ByteArray(0)
     }
 }
 

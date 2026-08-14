@@ -1,0 +1,6 @@
+.worktrees/
+.gradle/
+build/
+app/build/
+app/src/main/jniLibs/
+app/src/main/assets/AuroraSignedSeedTrust.bin

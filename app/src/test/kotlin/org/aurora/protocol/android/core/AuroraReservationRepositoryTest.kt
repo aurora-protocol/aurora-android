@@ -2,6 +2,7 @@ package org.aurora.protocol.android.core
 
 import java.util.Base64
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AuroraReservationRepositoryTest {
@@ -17,6 +18,23 @@ class AuroraReservationRepositoryTest {
 
         assertArrayEquals(byteArrayOf(0x01, 0x02), storage.provisioning)
         assertArrayEquals(ByteArray(responsePayload.size), responsePayload)
+    }
+
+    @Test
+    fun consumesStoredProvisioningBeforeStartingANativeSession() {
+        val storage = ConsumingStorage()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> throw AssertionError("not used") },
+            storage,
+        )
+
+        val reservation = repository.consume()
+        try {
+            assertArrayEquals(byteArrayOf(0x01, 0x02), reservation?.provisioning)
+            assertTrue(storage.cleared)
+        } finally {
+            reservation?.close()
+        }
     }
 
     private fun encodedReservation(): ByteArray {
@@ -43,5 +61,22 @@ class AuroraReservationRepositoryTest {
         override fun load(): CoreReservation? = null
 
         override fun clear() = Unit
+    }
+
+    private class ConsumingStorage : ReservationStore {
+        var cleared = false
+
+        override fun save(reservation: CoreReservation) = reservation.close()
+
+        override fun load(): CoreReservation = CoreReservation(
+            provisioning = byteArrayOf(0x01, 0x02),
+            spentHintKey = ByteArray(48),
+            relayBucketId = ByteArray(16),
+            accessHintExpiryUnix = 123,
+        )
+
+        override fun clear() {
+            cleared = true
+        }
     }
 }

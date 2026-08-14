@@ -10,6 +10,17 @@ internal class AuroraReservationRepository(
 
     fun load(): CoreReservation? = storage.load()
 
+    fun consume(): CoreReservation? {
+        val reservation = storage.load() ?: return null
+        try {
+            storage.clear()
+            return reservation
+        } catch (error: Exception) {
+            reservation.close()
+            throw error
+        }
+    }
+
     fun clear() {
         storage.clear()
     }

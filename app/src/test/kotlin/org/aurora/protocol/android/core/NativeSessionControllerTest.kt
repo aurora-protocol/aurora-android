@@ -77,12 +77,32 @@ class NativeSessionControllerTest {
         }
     }
 
+    @Test
+    fun invokesTunnelSetupBeforeCoreOpensTheCarrier() {
+        val core = FakeCore(beginPayload = issuerWorkPayload(byteArrayOf(0x30)))
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        var setupInvoked = false
+
+        controller.establish(byteArrayOf(0x10)) {
+            setupInvoked = true
+            assertFalse(core.completed)
+        }
+
+        try {
+            assertTrue(setupInvoked)
+            assertTrue(core.completed)
+        } finally {
+            controller.close()
+        }
+    }
+
     private class FakeCore(
         private val beginPayload: ByteArray,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),
         private val nextPacket: ByteArray = byteArrayOf(0x60),
     ) : NativeSessionCore {
         val closedHandles = mutableListOf<Long>()
+        var completed = false
         lateinit var issuerResponse: ByteArray
         lateinit var ingressPacket: ByteArray
 
@@ -91,6 +111,7 @@ class NativeSessionControllerTest {
 
         override fun completeNativeSession(handle: Long, issuerResponse: ByteArray): Boolean {
             this.issuerResponse = issuerResponse.copyOf()
+            completed = true
             return handle == 7L
         }
 

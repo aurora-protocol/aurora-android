@@ -1,9 +1,14 @@
 package org.aurora.protocol.android.core
 
+internal interface NativePacketSession : AutoCloseable {
+    fun ingressLocalPacket(packet: ByteArray): List<ByteArray>
+    fun nextLocalPacket(): ByteArray
+}
+
 internal class NativeSessionController(
     private val core: NativeSessionCore = NativeCoreJni,
     private val issuer: IssuerExchange = HttpsIssuerExchange(),
-) : AutoCloseable {
+) : NativePacketSession {
     private val lock = Any()
     private var generation = 0L
     private var pendingHandle = 0L
@@ -13,7 +18,7 @@ internal class NativeSessionController(
     val isEstablished: Boolean
         get() = synchronized(lock) { activeHandle != 0L }
 
-    fun establish(provisioning: ByteArray): Long {
+    fun establish(provisioning: ByteArray, beforeCoreCompletion: () -> Unit = {}): Long {
         val ownGeneration = synchronized(lock) {
             check(!starting && pendingHandle == 0L && activeHandle == 0L) { "native session already exists" }
             starting = true
@@ -37,6 +42,7 @@ internal class NativeSessionController(
             }
             issuerResponse = issuer.exchange(work)
             require(issuerResponse.isNotEmpty() && issuerResponse.size <= maximumIssuerResponseBytes) { "invalid issuer response" }
+            beforeCoreCompletion()
             check(core.completeNativeSession(work.handle, issuerResponse)) { "Core native session completion rejected" }
             established = synchronized(lock) {
                 if (generation != ownGeneration || !starting || pendingHandle != work.handle) {
@@ -68,7 +74,7 @@ internal class NativeSessionController(
         }
     }
 
-    fun ingressLocalPacket(packet: ByteArray): List<ByteArray> {
+    override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> {
         val handle = establishedHandle()
         try {
             core.ingressLocalPacket(handle, packet).use { response ->
@@ -80,7 +86,7 @@ internal class NativeSessionController(
         }
     }
 
-    fun nextLocalPacket(): ByteArray = core.nextLocalPacket(establishedHandle())
+    override fun nextLocalPacket(): ByteArray = core.nextLocalPacket(establishedHandle())
 
     override fun close() {
         val handle = synchronized(lock) {

@@ -96,6 +96,19 @@ class NativeSessionControllerTest {
         }
     }
 
+    @Test
+    fun refusesToStartAfterAnExplicitCloseAndClearsProvisioning() {
+        val controller = NativeSessionController(FakeCore(issuerWorkPayload(byteArrayOf(0x30))), RecordingIssuerExchange(byteArrayOf(0x50)))
+        val provisioning = byteArrayOf(0x10)
+        controller.close()
+
+        assertThrows(IllegalStateException::class.java) {
+            controller.establish(provisioning)
+        }
+
+        assertArrayEquals(ByteArray(provisioning.size), provisioning)
+    }
+
     private class FakeCore(
         private val beginPayload: ByteArray,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),

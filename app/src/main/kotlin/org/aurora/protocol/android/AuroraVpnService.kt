@@ -24,6 +24,7 @@ class AuroraVpnService : VpnService() {
     private val commandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val lifecycleLock = Any()
     private var runtime: NativeTunnelRuntime? = null
+    private var connectingSession: NativeSessionController? = null
     private var connecting = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -58,6 +59,12 @@ class AuroraVpnService : VpnService() {
         commandExecutor.execute {
             var device: FileDescriptorTunnelDevice? = null
             val session = NativeSessionController()
+            synchronized(lifecycleLock) {
+                if (!connecting) {
+                    return@execute
+                }
+                connectingSession = session
+            }
             try {
                 val reservation = (application as AuroraApplication).reservations.consume()
                     ?: throw IllegalStateException("no stored provisioning reservation")
@@ -78,6 +85,7 @@ class AuroraVpnService : VpnService() {
                         return@execute
                     }
                     runtime = establishedRuntime
+                    connectingSession = null
                     connecting = false
                 }
                 establishedRuntime.start()
@@ -85,6 +93,9 @@ class AuroraVpnService : VpnService() {
                 device?.close()
                 session.close()
                 synchronized(lifecycleLock) {
+                    if (connectingSession === session) {
+                        connectingSession = null
+                    }
                     connecting = false
                 }
                 stopTunnel(stopService = true)
@@ -110,13 +121,15 @@ class AuroraVpnService : VpnService() {
     }
 
     private fun stopTunnel(stopService: Boolean) {
-        val existing = synchronized(lifecycleLock) {
+        val resources = synchronized(lifecycleLock) {
             connecting = false
-            val value = runtime
+            val value = runtime to connectingSession
             runtime = null
+            connectingSession = null
             value
         }
-        existing?.close()
+        resources.first?.close()
+        resources.second?.close()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

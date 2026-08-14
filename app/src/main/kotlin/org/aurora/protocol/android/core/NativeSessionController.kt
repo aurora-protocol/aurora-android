@@ -14,15 +14,21 @@ internal class NativeSessionController(
     private var pendingHandle = 0L
     private var activeHandle = 0L
     private var starting = false
+    private var closed = false
 
     val isEstablished: Boolean
         get() = synchronized(lock) { activeHandle != 0L }
 
     fun establish(provisioning: ByteArray, beforeCoreCompletion: () -> Unit = {}): Long {
-        val ownGeneration = synchronized(lock) {
-            check(!starting && pendingHandle == 0L && activeHandle == 0L) { "native session already exists" }
-            starting = true
-            ++generation
+        val ownGeneration = try {
+            synchronized(lock) {
+                check(!closed && !starting && pendingHandle == 0L && activeHandle == 0L) { "native session is unavailable" }
+                starting = true
+                ++generation
+            }
+        } catch (error: IllegalStateException) {
+            provisioning.fill(0)
+            throw error
         }
         var work: NativeIssuerWork? = null
         var issuerResponse: ByteArray? = null
@@ -91,6 +97,7 @@ internal class NativeSessionController(
     override fun close() {
         val handle = synchronized(lock) {
             ++generation
+            closed = true
             starting = false
             val current = if (activeHandle != 0L) activeHandle else pendingHandle
             activeHandle = 0L

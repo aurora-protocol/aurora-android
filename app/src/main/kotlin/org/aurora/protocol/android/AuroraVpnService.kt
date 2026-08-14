@@ -16,6 +16,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import org.aurora.protocol.android.core.NativeSessionController
 import org.aurora.protocol.android.core.NativeTunnelRuntime
 import org.aurora.protocol.android.core.TunnelPacketDevice
@@ -56,50 +57,54 @@ class AuroraVpnService : VpnService() {
             connecting = true
         }
         enterForeground()
-        commandExecutor.execute {
-            var device: FileDescriptorTunnelDevice? = null
-            val session = NativeSessionController()
-            synchronized(lifecycleLock) {
-                if (!connecting) {
-                    return@execute
-                }
-                connectingSession = session
-            }
-            try {
-                val reservation = (application as AuroraApplication).reservations.consume()
-                    ?: throw IllegalStateException("no stored provisioning reservation")
-                try {
-                    session.establish(reservation.provisioning) {
-                        device = establishTunnel()
-                    }
-                } finally {
-                    reservation.close()
-                }
-                val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
-                val establishedRuntime = NativeTunnelRuntime(session, establishedDevice) { _ ->
-                    stopTunnel(stopService = true)
-                }
+        try {
+            commandExecutor.execute {
+                var device: FileDescriptorTunnelDevice? = null
+                val session = NativeSessionController()
                 synchronized(lifecycleLock) {
                     if (!connecting) {
-                        establishedRuntime.close()
                         return@execute
                     }
-                    runtime = establishedRuntime
-                    connectingSession = null
-                    connecting = false
+                    connectingSession = session
                 }
-                establishedRuntime.start()
-            } catch (_: Exception) {
-                device?.close()
-                session.close()
-                synchronized(lifecycleLock) {
-                    if (connectingSession === session) {
-                        connectingSession = null
+                try {
+                    val reservation = (application as AuroraApplication).reservations.consume()
+                        ?: throw IllegalStateException("no stored provisioning reservation")
+                    try {
+                        session.establish(reservation.provisioning) {
+                            device = establishTunnel()
+                        }
+                    } finally {
+                        reservation.close()
                     }
-                    connecting = false
+                    val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
+                    val establishedRuntime = NativeTunnelRuntime(session, establishedDevice) { _ ->
+                        stopTunnel(stopService = true)
+                    }
+                    synchronized(lifecycleLock) {
+                        if (!connecting) {
+                            establishedRuntime.close()
+                            return@execute
+                        }
+                        runtime = establishedRuntime
+                        connectingSession = null
+                        connecting = false
+                    }
+                    establishedRuntime.start()
+                } catch (_: Exception) {
+                    device?.close()
+                    session.close()
+                    synchronized(lifecycleLock) {
+                        if (connectingSession === session) {
+                            connectingSession = null
+                        }
+                        connecting = false
+                    }
+                    stopTunnel(stopService = true)
                 }
-                stopTunnel(stopService = true)
             }
+        } catch (_: RejectedExecutionException) {
+            stopTunnel(stopService = true)
         }
     }
 
@@ -130,12 +135,7 @@ class AuroraVpnService : VpnService() {
         }
         resources.first?.close()
         resources.second?.close()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
         if (stopService) {
             stopSelf()
         }
@@ -143,14 +143,14 @@ class AuroraVpnService : VpnService() {
 
     private fun enterForeground() {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(notificationChannel, "Aurora VPN", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(notificationChannel, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, notificationChannel)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentTitle("Aurora")
-            .setContentText("VPN active")
+            .setSmallIcon(R.drawable.ic_aurora)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.notification_active))
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(notificationId, notification)

@@ -44,6 +44,10 @@ android {
             version = "3.22.1"
         }
     }
+
+    lint {
+        disable += "AndroidGradlePluginVersion"
+    }
 }
 
 kotlin {
@@ -52,7 +56,7 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20250517")
+    testImplementation("org.json:json:20260719")
 }
 
 val prepareNativeCore by tasks.registering(Exec::class) {

@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: aurora-protocol/aurora-core
-          ref: 6a21f167e51fa219c14049d9f940112067adf600
+          ref: 1bcf6e024e5d91cd3c945c2b6dee8c76611c7a81
           path: aurora-core
       - name: Install Android build tools
         run: |

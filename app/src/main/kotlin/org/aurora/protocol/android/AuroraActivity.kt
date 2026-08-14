@@ -15,12 +15,16 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import org.aurora.protocol.android.core.ProvisioningImport
 
 class AuroraActivity : Activity() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var importField: EditText
+    private lateinit var importButton: Button
+    private lateinit var connectButton: Button
     private lateinit var status: TextView
+    private val requestState = ConnectionRequestState()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,13 +39,21 @@ class AuroraActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == requestVpnPermission) {
-            if (resultCode == RESULT_OK) {
-                AuroraVpnService.connect(this)
-                status.text = "Connecting"
-            } else {
-                status.text = "VPN permission required"
-            }
+        if (requestCode != requestVpnPermission || !requestState.consumeConnectionRequest()) {
+            return
+        }
+        refreshControls()
+        if (resultCode == RESULT_OK) {
+            startConnection()
+        } else {
+            status.setText(R.string.status_vpn_permission_required)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == requestNotifications && requestState.connectRequested) {
+            requestVpnPreparation()
         }
     }
 
@@ -56,48 +68,95 @@ class AuroraActivity : Activity() {
             setSingleLine(false)
             minLines = 4
         }
-        status = TextView(this).apply { text = "Ready" }
+        status = TextView(this).apply { setText(R.string.status_ready) }
         layout.addView(importField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        layout.addView(commandButton("Import") { importProvisioning() })
-        layout.addView(commandButton("Connect") { connect() })
-        layout.addView(commandButton("Disconnect") {
+        importButton = commandButton(R.string.action_import) { importProvisioning() }
+        connectButton = commandButton(R.string.action_connect) { connect() }
+        layout.addView(importButton)
+        layout.addView(connectButton)
+        layout.addView(commandButton(R.string.action_disconnect) {
+            requestState.cancelConnectionRequest()
+            refreshControls()
             AuroraVpnService.disconnect(this)
-            status.text = "Disconnected"
+            status.setText(R.string.status_disconnected)
         })
         layout.addView(status)
         return layout
     }
 
-    private fun commandButton(label: String, action: () -> Unit): Button = Button(this).apply {
-        text = label
+    private fun commandButton(label: Int, action: () -> Unit): Button = Button(this).apply {
+        setText(label)
         setOnClickListener { action() }
     }
 
     private fun importProvisioning() {
+        if (!requestState.beginImport()) {
+            return
+        }
         val encoded = importField.text.toString()
         importField.text?.clear()
-        worker.execute {
-            try {
-                val request = ProvisioningImport.decode(encoded)
-                (application as AuroraApplication).reservations.reserveAndPersist(request, System.currentTimeMillis() / 1_000)
-                runOnUiThread { status.text = "Ready" }
-            } catch (_: Exception) {
-                runOnUiThread { status.text = "Import failed" }
+        status.setText(R.string.status_importing)
+        refreshControls()
+        try {
+            worker.execute {
+                val message = try {
+                    val request = ProvisioningImport.decode(encoded)
+                    (application as AuroraApplication).reservations.reserveAndPersist(request, System.currentTimeMillis() / 1_000)
+                    getString(R.string.status_ready)
+                } catch (_: Exception) {
+                    getString(R.string.status_import_failed)
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) {
+                        return@runOnUiThread
+                    }
+                    requestState.completeImport()
+                    status.text = message
+                    refreshControls()
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            requestState.completeImport()
+            status.setText(R.string.status_import_failed)
+            refreshControls()
         }
     }
 
     private fun connect() {
+        if (!requestState.beginConnectionRequest()) {
+            return
+        }
+        refreshControls()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), requestNotifications)
+            return
+        }
+        requestVpnPreparation()
+    }
+
+    private fun requestVpnPreparation() {
+        if (!requestState.connectRequested) {
+            return
         }
         val preparation = VpnService.prepare(this)
         if (preparation == null) {
-            AuroraVpnService.connect(this)
-            status.text = "Connecting"
+            if (requestState.consumeConnectionRequest()) {
+                refreshControls()
+                startConnection()
+            }
         } else {
             startActivityForResult(preparation, requestVpnPermission)
         }
+    }
+
+    private fun startConnection() {
+        AuroraVpnService.connect(this)
+        status.setText(R.string.status_connecting)
+    }
+
+    private fun refreshControls() {
+        importButton.isEnabled = !requestState.importInProgress && !requestState.connectRequested
+        connectButton.isEnabled = !requestState.importInProgress && !requestState.connectRequested
     }
 
     private companion object {

@@ -33,5 +33,5 @@ for abi in arm64-v8a x86_64; do
     library="$temporary_directory/$abi-libaurora_android_jni.so"
     unzip -p "$APK" "lib/$abi/libaurora_android_jni.so" > "$library"
     test -s "$library"
-    "$toolchain/llvm-readelf" -d "$library" | rg -F 'Shared library: [libauroracore.so]' >/dev/null
+    "$toolchain/llvm-readelf" -d "$library" | grep -F 'Shared library: [libauroracore.so]' >/dev/null
 done

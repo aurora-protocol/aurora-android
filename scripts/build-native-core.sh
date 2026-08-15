@@ -54,10 +54,10 @@ build_abi() {
     )
     test -s "$output"
     test -s "$header"
-    rg -F 'AuroraCoreCall' "$header" >/dev/null
-    rg -F 'AuroraCoreZeroFree' "$header" >/dev/null
-    "$toolchain/llvm-nm" -D --defined-only "$output" | rg ' AuroraCore(Call|Free|ZeroFree)$' >/dev/null
-    "$toolchain/llvm-readelf" -d "$output" | rg -F 'Library soname: [libauroracore.so]' >/dev/null
+    grep -F 'AuroraCoreCall' "$header" >/dev/null
+    grep -F 'AuroraCoreZeroFree' "$header" >/dev/null
+    "$toolchain/llvm-nm" -D --defined-only "$output" | grep -E ' AuroraCore(Call|Free|ZeroFree)$' >/dev/null
+    "$toolchain/llvm-readelf" -d "$output" | grep -F 'Library soname: [libauroracore.so]' >/dev/null
 }
 
 build_abi arm64-v8a arm64 aarch64-linux-android26-clang

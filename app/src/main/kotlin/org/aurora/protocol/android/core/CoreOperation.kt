@@ -1,0 +1,11 @@
+package org.aurora.protocol.android.core
+
+internal enum class CoreOperation(val wireValue: Int) {
+    CLOSE_NATIVE_SESSION(10),
+    NEXT_LOCAL_PACKET(15),
+    BEGIN_NATIVE_SESSION_JSON(16),
+    COMPLETE_NATIVE_SESSION_RAW(17),
+    INGRESS_LOCAL_PACKET_JSON(18),
+    CONFIGURE_NATIVE_PROVISIONING_TRUST(21),
+    RESERVE_NATIVE_PROVISIONING_JSON(22),
+}

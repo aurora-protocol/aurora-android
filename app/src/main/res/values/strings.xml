@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Aurora</string>
+    <string name="action_import">Import</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_importing">Importing</string>
+    <string name="status_import_failed">Import failed</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_vpn_permission_required">VPN permission required</string>
+    <string name="notification_channel_name">Aurora VPN</string>
+    <string name="notification_active">VPN active</string>
+</resources>

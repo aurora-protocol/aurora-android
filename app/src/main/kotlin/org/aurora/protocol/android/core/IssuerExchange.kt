@@ -17,6 +17,7 @@ internal data class IssuerHttpResponse(
     val statusCode: Int,
     val contentLength: Long,
     val body: InputStream?,
+    val contentType: String?,
 )
 
 internal interface IssuerHttpConnection : AutoCloseable {
@@ -58,6 +59,7 @@ internal class HttpsIssuerExchange(
         try {
             val response = connection.post(work.requestBody)
             require(response.statusCode == HttpsURLConnection.HTTP_OK) { "issuer rejected request" }
+            require(isBinaryContentType(response.contentType)) { "issuer response content type is invalid" }
             require(response.contentLength in -1..maximumIssuerResponseBytes.toLong()) { "issuer response exceeds size limit" }
             val body = response.body ?: throw IllegalStateException("issuer response body is unavailable")
             return body.use { readBounded(it) }
@@ -132,6 +134,11 @@ internal class HttpsIssuerExchange(
         }
     }
 
+    private fun isBinaryContentType(value: String?): Boolean {
+        val mediaType = value?.substringBefore(';')?.trim()
+        return mediaType.equals("application/octet-stream", ignoreCase = true)
+    }
+
     private companion object {
         const val maximumIssuerRequestBytes = 8 * 1024
         const val maximumIssuerPathCharacters = 8 * 1024
@@ -170,6 +177,7 @@ private class HttpsIssuerHttpConnection(endpoint: URL) : IssuerHttpConnection {
             statusCode = statusCode,
             contentLength = connection.contentLengthLong,
             body = if (statusCode == HttpsURLConnection.HTTP_OK) connection.inputStream else null,
+            contentType = connection.contentType,
         )
     }
 

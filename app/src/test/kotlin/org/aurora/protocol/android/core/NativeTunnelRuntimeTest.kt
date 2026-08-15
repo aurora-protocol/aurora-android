@@ -1,5 +1,6 @@
 package org.aurora.protocol.android.core
 
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
@@ -50,6 +51,28 @@ class NativeTunnelRuntimeTest {
         assertTrue(device.closed)
     }
 
+    @Test
+    fun clearsEveryImmediatePacketWhenTunnelWriteFails() {
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+        val immediateFirst = byteArrayOf(0x45, 0x00)
+        val immediateSecond = byteArrayOf(0x60, 0x00)
+        val failure = CountDownLatch(1)
+        val device = FailingWriteTunnelPacketDevice(ingress)
+        val session = FailingImmediatePacketSession(immediateFirst, immediateSecond)
+        val workers = Executors.newFixedThreadPool(2)
+        val runtime = NativeTunnelRuntime(session, device, workers) { failure.countDown() }
+
+        try {
+            runtime.start()
+            assertTrue(failure.await(2, TimeUnit.SECONDS))
+            assertArrayEquals(ByteArray(immediateFirst.size), immediateFirst)
+            assertArrayEquals(ByteArray(immediateSecond.size), immediateSecond)
+        } finally {
+            runtime.close()
+            workers.shutdownNow()
+        }
+    }
+
     private class FakeNativePacketSession : NativePacketSession {
         val deferredPackets = LinkedBlockingQueue<ByteArray>()
         var closed = false
@@ -89,6 +112,39 @@ class NativeTunnelRuntimeTest {
 
         override fun close() {
             closed = true
+        }
+    }
+
+    private class FailingImmediatePacketSession(
+        private val first: ByteArray,
+        private val second: ByteArray,
+    ) : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = listOf(first, second)
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            deferredPackets.offer(byteArrayOf(0x45))
+        }
+    }
+
+    private class FailingWriteTunnelPacketDevice(firstPacket: ByteArray) : TunnelPacketDevice {
+        private val inbound = LinkedBlockingQueue<ByteArray>()
+
+        init {
+            inbound.offer(firstPacket)
+        }
+
+        override fun readPacket(): ByteArray? = inbound.take()
+
+        override fun writePacket(packet: ByteArray) {
+            throw IOException("test tunnel write failure")
+        }
+
+        override fun close() {
+            inbound.offer(byteArrayOf(0x45))
         }
     }
 }

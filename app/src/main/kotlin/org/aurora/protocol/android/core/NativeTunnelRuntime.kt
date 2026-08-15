@@ -46,7 +46,11 @@ internal class NativeTunnelRuntime(
                 val packet = device.readPacket() ?: throw IllegalStateException("tunnel input closed")
                 try {
                     val immediatePackets = session.ingressLocalPacket(packet)
-                    immediatePackets.forEach(::writePacket)
+                    try {
+                        immediatePackets.forEach(::writePacket)
+                    } finally {
+                        immediatePackets.forEach { it.fill(0) }
+                    }
                 } finally {
                     packet.fill(0)
                 }

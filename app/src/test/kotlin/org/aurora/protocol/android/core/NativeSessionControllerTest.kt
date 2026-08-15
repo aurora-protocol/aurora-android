@@ -135,18 +135,54 @@ class NativeSessionControllerTest {
         assertEquals(listOf(7L), core.closedHandles)
     }
 
+    @Test
+    fun closeDuringCoreBeginClosesTheReturnedHandle() {
+        val beginStarted = CountDownLatch(1)
+        val allowBeginToReturn = CountDownLatch(1)
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            beginStarted = beginStarted,
+            allowBeginToReturn = allowBeginToReturn,
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        val result = arrayOfNulls<Throwable>(1)
+        val worker = Thread {
+            try {
+                controller.establish(byteArrayOf(0x10))
+            } catch (error: Throwable) {
+                result[0] = error
+            }
+        }
+
+        worker.start()
+        assertTrue(beginStarted.await(2, TimeUnit.SECONDS))
+        controller.close()
+        allowBeginToReturn.countDown()
+        worker.join(2_000)
+
+        assertFalse(worker.isAlive)
+        assertTrue(result[0] is IllegalStateException)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
     private class FakeCore(
         private val beginPayload: ByteArray,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),
         private val nextPacket: ByteArray = byteArrayOf(0x60),
+        private val beginStarted: CountDownLatch? = null,
+        private val allowBeginToReturn: CountDownLatch? = null,
     ) : NativeSessionCore {
         val closedHandles = mutableListOf<Long>()
         var completed = false
         lateinit var issuerResponse: ByteArray
         lateinit var ingressPacket: ByteArray
 
-        override fun beginNativeSession(provisioning: ByteArray): CoreResponse =
-            CoreResponse(CoreStatus.OK, beginPayload.copyOf())
+        override fun beginNativeSession(provisioning: ByteArray): CoreResponse {
+            beginStarted?.countDown()
+            allowBeginToReturn?.await(2, TimeUnit.SECONDS)
+            return CoreResponse(CoreStatus.OK, beginPayload.copyOf())
+        }
 
         override fun completeNativeSession(handle: Long, issuerResponse: ByteArray): Boolean {
             this.issuerResponse = issuerResponse.copyOf()

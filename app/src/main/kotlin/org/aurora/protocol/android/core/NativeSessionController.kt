@@ -42,9 +42,17 @@ internal class NativeSessionController(
             } finally {
                 provisioning.fill(0)
             }
-            synchronized(lock) {
-                check(generation == ownGeneration && starting) { "native session was cancelled" }
-                pendingHandle = work.handle
+            val closeReturnedHandle = synchronized(lock) {
+                if (generation != ownGeneration || !starting) {
+                    true
+                } else {
+                    pendingHandle = work.handle
+                    false
+                }
+            }
+            if (closeReturnedHandle) {
+                core.closeNativeSession(work.handle)
+                throw IllegalStateException("native session was cancelled")
             }
             issuerResponse = issuer.exchange(work)
             require(issuerResponse.isNotEmpty() && issuerResponse.size <= maximumIssuerResponseBytes) { "invalid issuer response" }
@@ -69,7 +77,9 @@ internal class NativeSessionController(
                 val handle = work?.handle ?: 0L
                 val shouldClose = synchronized(lock) {
                     if (generation == ownGeneration) {
-                        pendingHandle = 0L
+                        if (pendingHandle == handle) {
+                            pendingHandle = 0L
+                        }
                         starting = false
                         true
                     } else {

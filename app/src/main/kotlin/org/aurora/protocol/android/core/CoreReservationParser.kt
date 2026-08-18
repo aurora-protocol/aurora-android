@@ -1,6 +1,7 @@
 package org.aurora.protocol.android.core
 
 import java.util.Base64
+import org.json.JSONException
 import org.json.JSONObject
 
 internal class CoreReservation(
@@ -47,6 +48,14 @@ internal object CoreReservationParser {
             val expiry = requireInteger(value, "access_hint_expiry_unix")
             require(expiry > 0) { "invalid reservation expiry" }
             return CoreReservation(provisioning, spentHintKey, relayBucketId, expiry)
+        } catch (error: JSONException) {
+            // JSONException is a RuntimeException in the org.json test artifact but a
+            // checked Exception on device, so it must be caught explicitly for the
+            // scrubbing below to run identically in both environments.
+            provisioning?.fill(0)
+            spentHintKey?.fill(0)
+            relayBucketId?.fill(0)
+            throw IllegalArgumentException("invalid Core reservation", error)
         } catch (error: RuntimeException) {
             provisioning?.fill(0)
             spentHintKey?.fill(0)

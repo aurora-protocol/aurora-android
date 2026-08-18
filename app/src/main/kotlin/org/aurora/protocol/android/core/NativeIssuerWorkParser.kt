@@ -3,6 +3,7 @@ package org.aurora.protocol.android.core
 import java.net.URI
 import java.net.URL
 import java.util.Base64
+import org.json.JSONException
 import org.json.JSONObject
 
 internal class NativeIssuerWork(
@@ -43,6 +44,11 @@ internal object NativeIssuerWorkParser {
             requestBody = decodeBase64(requireString(value, "request_body_base64"))
             require(requestBody.isNotEmpty() && requestBody.size <= maximumRequestBytes) { "invalid issuer request body" }
             return NativeIssuerWork(handle, issuerUrl, carrierPath, requestBody)
+        } catch (error: JSONException) {
+            // Caught separately from RuntimeException: org.json.JSONException is a
+            // RuntimeException in the test artifact but a checked Exception on device.
+            requestBody?.fill(0)
+            throw IllegalArgumentException("invalid Core issuer work", error)
         } catch (error: RuntimeException) {
             requestBody?.fill(0)
             throw IllegalArgumentException("invalid Core issuer work", error)
@@ -62,7 +68,9 @@ internal object NativeIssuerWorkParser {
     private fun parseCarrierPath(value: String): String {
         require(value.isNotEmpty() && value.length <= maximumCarrierPathCharacters) { "issuer carrier path is invalid" }
         require(value.startsWith("/") && !value.startsWith("//")) { "issuer carrier path is not absolute" }
-        require(!value.contains('?') && !value.contains('#') && !value.contains('\\')) { "issuer carrier path contains unsupported components" }
+        require(!value.contains('?') && !value.contains('#') && !value.contains('\\')) {
+            "issuer carrier path contains unsupported components"
+        }
         val uri = URI(null, null, value, null)
         require(uri.rawPath == value && uri.normalize().rawPath == value) { "issuer carrier path is not normalized" }
         return value

@@ -3,7 +3,9 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE_DIR="${AURORA_CORE_DIR:-$ROOT/../aurora-core}"
-EXPECTED_CORE_REVISION="c2d9ac7758058c002aaac1e804ac677382c2c520"
+# Single source of truth for the pinned aurora-core revision; CI reads the same
+# file so the checkout ref and this guard cannot drift apart.
+EXPECTED_CORE_REVISION="$(cat "$ROOT/aurora-core.revision")"
 ANDROID_SDK_HOME="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_SDK_HOME}/ndk/27.1.12297006}"
 OUTPUT_ROOT="$ROOT/app/build/generated/auroracore"
@@ -18,8 +20,13 @@ if [ ! -d "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" ]; then
     printf 'Android NDK is unavailable: %s\n' "$ANDROID_NDK_HOME" >&2
     exit 1
 fi
-if [ "$(git -C "$CORE_DIR" rev-parse HEAD)" != "$EXPECTED_CORE_REVISION" ]; then
+actual_core_revision="$(git -C "$CORE_DIR" rev-parse HEAD)"
+if [ "$actual_core_revision" != "$EXPECTED_CORE_REVISION" ]; then
     printf 'aurora-core revision does not match the Android ABI pin\n' >&2
+    printf '  expected: %s (from aurora-core.revision)\n' "$EXPECTED_CORE_REVISION" >&2
+    printf '  actual:   %s (in %s)\n' "$actual_core_revision" "$CORE_DIR" >&2
+    printf 'Check out the pinned revision, or point AURORA_CORE_DIR at a checkout of it:\n' >&2
+    printf '  git -C %s checkout %s\n' "$CORE_DIR" "$EXPECTED_CORE_REVISION" >&2
     exit 1
 fi
 

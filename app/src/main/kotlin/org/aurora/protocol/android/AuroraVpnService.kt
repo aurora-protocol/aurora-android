@@ -143,7 +143,13 @@ class AuroraVpnService : VpnService() {
 
     private fun enterForeground() {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(notificationChannel, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(
+            NotificationChannel(
+                notificationChannel,
+                getString(R.string.notification_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ),
+        )
         val notification = Notification.Builder(this, notificationChannel)
             .setSmallIcon(R.drawable.ic_aurora)
             .setContentTitle(getString(R.string.app_name))

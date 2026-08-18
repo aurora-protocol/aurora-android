@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -27,6 +31,17 @@ jobs:
           repository: aurora-protocol/aurora-core
           ref: c2d9ac7758058c002aaac1e804ac677382c2c520
           path: aurora-core
+      - name: Verify aurora-core pin matches aurora-core.revision
+        run: |
+          expected="$(cat aurora-core.revision)"
+          actual="$(git -C aurora-core rev-parse HEAD)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checkout ref does not match aurora-core.revision"
+            echo "  aurora-core.revision: $expected"
+            echo "  checked out:          $actual"
+            echo "Update both the checkout ref above and aurora-core.revision together."
+            exit 1
+          fi
       - name: Install Android build tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
@@ -42,7 +57,7 @@ jobs:
           AURORA_CORE_DIR: ${{ github.workspace }}/aurora-core
           GOTOOLCHAIN: go1.26.6
           GOCACHE: ${{ github.workspace }}/.cache/go-build
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:assembleRelease
       - name: Verify release package contents
         run: |
           ./scripts/verify-release-native-linkage.sh
@@ -50,3 +65,11 @@ jobs:
           unzip -Z1 "$apk" | grep -Fx 'assets/AuroraSignedSeedTrust.bin'
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libauroracore.so'
           unzip -Z1 "$apk" | grep -Fx 'lib/x86_64/libauroracore.so'
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: android-build-reports
+          path: app/build/reports/
+          if-no-files-found: ignore
+          retention-days: 7

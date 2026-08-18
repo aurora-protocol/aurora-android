@@ -2,6 +2,7 @@ package org.aurora.protocol.android.core
 
 import java.util.Base64
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 internal object NativeLocalPacketsParser {
@@ -30,6 +31,11 @@ internal object NativeLocalPacketsParser {
                 packets += packet
             }
             return packets
+        } catch (error: JSONException) {
+            // Caught separately from RuntimeException: org.json.JSONException is a
+            // RuntimeException in the test artifact but a checked Exception on device.
+            packets.forEach { it.fill(0) }
+            throw IllegalArgumentException("invalid Core local packet result", error)
         } catch (error: RuntimeException) {
             packets.forEach { it.fill(0) }
             throw IllegalArgumentException("invalid Core local packet result", error)

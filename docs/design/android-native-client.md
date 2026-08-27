@@ -97,7 +97,17 @@ packet contents.
    an unprotected route.
 7. Stop, revoke, and fatal-error paths close the Core handle, close the TUN
    descriptor, cancel workers, clear in-memory sensitive data, and remove the
-   foreground state.
+   foreground state. Service callbacks atomically detach the active generation
+   and remove the foreground state without waiting for network or native close
+   calls. A process-scoped single-thread teardown owner closes those detached
+   resources, remains live across service-instance destruction and recreation,
+   and rejects reconnects until both resource cleanup and any canceled
+   establishment work finish. Destruction completes the establishment gate
+   only for commands the executor returns as never started; a command that has
+   begun retains the process gate through its final late-session cleanup.
+   Runtime close is completion-bearing: if a packet worker already owns
+   shutdown, every concurrent close joins that shutdown before teardown
+   ownership can be released.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.
@@ -155,8 +165,9 @@ allowing a second request to overlap a connection whose teardown is uncertain.
 
 - JVM tests cover byte clearing, trust-loader validation, encrypted store
   round-trips, issuer request validation, redirect rejection, response bounds,
-  tunnel worker shutdown, canonical binary packet-list framing, packet-result
-  ownership, and the JNI bridge's operation and size contract.
+  tunnel worker shutdown, non-blocking lifecycle teardown and its concurrency
+  ownership, canonical binary packet-list framing, packet-result ownership,
+  and the JNI bridge's operation and size contract.
 - Native build checks produce ELF libraries for both supported ABIs and verify
   the embedded clean-Core revision and Go/toolchain build settings, exact
   reviewed Core/JNI interface, dependency linkage, and 16 KiB LOAD-segment

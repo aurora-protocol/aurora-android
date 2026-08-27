@@ -14,21 +14,50 @@ import android.os.ParcelFileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.aurora.protocol.android.core.AuroraLog
+import org.aurora.protocol.android.core.NativePacketSession
 import org.aurora.protocol.android.core.NativeSessionController
 import org.aurora.protocol.android.core.NativeTunnelRuntime
 import org.aurora.protocol.android.core.TunnelPacketDevice
 
+private val vpnProcessLifecycle = VpnProcessLifecycle(
+    onTeardownFailure = { error -> AuroraLog.debug("tunnel resource cleanup", error) },
+)
+
+internal class VpnConnectionCommand(
+    private val lifecycle: VpnServiceLifecycle,
+    private val generation: Long,
+    private val work: () -> Unit,
+) : Runnable {
+    private val claimed = AtomicBoolean()
+
+    override fun run() {
+        if (!claimed.compareAndSet(false, true) || !lifecycle.beginConnectionWork(generation)) {
+            return
+        }
+        try {
+            work()
+        } finally {
+            lifecycle.finishConnectionWork(generation)
+        }
+    }
+
+    /** Marks work proven never to have started by rejection or ExecutorService.shutdownNow(). */
+    fun discardIfQueued() {
+        if (claimed.compareAndSet(false, true)) {
+            lifecycle.discardConnectionWork(generation)
+        }
+    }
+}
+
 class AuroraVpnService : VpnService() {
     private val commandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val lifecycleLock = Any()
-    private var runtime: NativeTunnelRuntime? = null
-    private var connectingSession: NativeSessionController? = null
-    private var connecting = false
-    private var connectionGeneration = 0L
-    private var connectionStartId = 0
+    private val lifecycle = vpnProcessLifecycle.acquire()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (vpnServiceCommand(intent?.action)) {
@@ -45,100 +74,103 @@ class AuroraVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        stopTunnel(stopService = false)
-        commandExecutor.shutdownNow()
-        super.onDestroy()
+        try {
+            stopTunnel(stopService = false)
+        } finally {
+            try {
+                commandExecutor.shutdownNow()
+                    .filterIsInstance<VpnConnectionCommand>()
+                    .forEach { command -> command.discardIfQueued() }
+            } finally {
+                lifecycle.release()
+                super.onDestroy()
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = super.onBind(intent)
 
     private fun startTunnel(serviceStartId: Int) {
-        val ownGeneration = synchronized(lifecycleLock) {
-            if (connecting || runtime != null) {
-                // The work is shared, but this newer start request now owns its lifecycle.
-                connectionStartId = serviceStartId
+        val ownGeneration = when (val start = lifecycle.start(serviceStartId)) {
+            is VpnConnectionStart.Accepted -> start.generation
+            VpnConnectionStart.Shared -> return
+            VpnConnectionStart.Rejected -> {
+                collectCleanupFailures({ stopSelfResult(serviceStartId) })?.let { error ->
+                    AuroraLog.debug("rejected tunnel start cleanup", error)
+                }
                 return
             }
-            connecting = true
-            connectionStartId = serviceStartId
-            ++connectionGeneration
+        }
+        val connectionCommand = VpnConnectionCommand(lifecycle, ownGeneration) {
+            runConnection(ownGeneration)
         }
         try {
             enterForeground()
-            commandExecutor.execute {
-                var device: FileDescriptorTunnelDevice? = null
-                var candidateRuntime: NativeTunnelRuntime? = null
-                val session = NativeSessionController()
-                val acceptedSession = synchronized(lifecycleLock) {
-                    if (!isCurrentConnection(ownGeneration)) {
-                        false
-                    } else {
-                        connectingSession = session
-                        true
-                    }
+            commandExecutor.execute(connectionCommand)
+        } catch (error: RuntimeException) {
+            connectionCommand.discardIfQueued()
+            AuroraLog.debug("tunnel startup", error)
+            stopTunnel(
+                stopService = true,
+                expectedGeneration = ownGeneration,
+            )
+        }
+    }
+
+    private fun runConnection(ownGeneration: Long) {
+        var device: FileDescriptorTunnelDevice? = null
+        var candidateRuntime: NativeTunnelRuntime? = null
+        var session: NativeSessionController? = null
+        var sessionOwner: CloseOnceNativePacketSession? = null
+        try {
+            val createdSession = NativeSessionController()
+            session = createdSession
+            val ownedSession = CloseOnceNativePacketSession(createdSession)
+            sessionOwner = ownedSession
+            if (!lifecycle.attachSession(ownGeneration, ownedSession)) {
+                collectCleanupFailures(ownedSession::close)?.let { error ->
+                    AuroraLog.debug("cancelled tunnel cleanup", error)
                 }
-                if (!acceptedSession) {
-                    collectCleanupFailures(session::close)?.let {
-                        AuroraLog.debug("cancelled tunnel cleanup", it)
-                    }
-                    return@execute
+                return
+            }
+
+            val reservation = (application as AuroraApplication).reservations.consume()
+                ?: throw IllegalStateException("no stored provisioning reservation")
+            try {
+                createdSession.establish(reservation.provisioning) {
+                    device = establishTunnel()
                 }
-                try {
-                    val reservation = (application as AuroraApplication).reservations.consume()
-                        ?: throw IllegalStateException("no stored provisioning reservation")
-                    try {
-                        session.establish(reservation.provisioning) {
-                            device = establishTunnel()
-                        }
-                    } finally {
-                        reservation.close()
+            } finally {
+                reservation.close()
+            }
+            val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
+            val establishedRuntime = NativeTunnelRuntime(ownedSession, establishedDevice) { error ->
+                AuroraLog.debug("tunnel runtime", error)
+                stopTunnel(
+                    stopService = true,
+                    expectedGeneration = ownGeneration,
+                )
+            }
+            candidateRuntime = establishedRuntime
+            if (!lifecycle.promoteRuntime(ownGeneration, ownedSession, establishedRuntime)) {
+                collectCleanupFailures(establishedRuntime::close)?.let { error ->
+                    AuroraLog.debug("cancelled tunnel cleanup", error)
+                }
+                return
+            }
+            establishedRuntime.start()
+        } catch (error: Throwable) {
+            if (candidateRuntime == null) {
+                collectCleanupFailures(
+                    { device?.close() },
+                    { sessionOwner?.close() ?: session?.close() },
+                )?.let { cleanupFailure ->
+                    if (cleanupFailure !== error) {
+                        error.addSuppressed(cleanupFailure)
                     }
-                    val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
-                    val establishedRuntime = NativeTunnelRuntime(session, establishedDevice) { error ->
-                        AuroraLog.debug("tunnel runtime", error)
-                        stopTunnel(
-                            stopService = true,
-                            expectedGeneration = ownGeneration,
-                        )
-                    }
-                    candidateRuntime = establishedRuntime
-                    val acceptedRuntime = synchronized(lifecycleLock) {
-                        if (!isCurrentConnection(ownGeneration) || connectingSession !== session) {
-                            false
-                        } else {
-                            runtime = establishedRuntime
-                            connectingSession = null
-                            connecting = false
-                            true
-                        }
-                    }
-                    if (!acceptedRuntime) {
-                        collectCleanupFailures(establishedRuntime::close)?.let {
-                            AuroraLog.debug("cancelled tunnel cleanup", it)
-                        }
-                        return@execute
-                    }
-                    establishedRuntime.start()
-                } catch (error: Throwable) {
-                    if (candidateRuntime == null) {
-                        collectCleanupFailures(
-                            { device?.close() },
-                            session::close,
-                        )?.let { cleanupFailure ->
-                            if (cleanupFailure !== error) {
-                                error.addSuppressed(cleanupFailure)
-                            }
-                        }
-                    }
-                    AuroraLog.debug("tunnel establishment", error)
-                    stopTunnel(
-                        stopService = true,
-                        expectedGeneration = ownGeneration,
-                    )
                 }
             }
-        } catch (error: RuntimeException) {
-            AuroraLog.debug("tunnel startup", error)
+            AuroraLog.debug("tunnel establishment", error)
             stopTunnel(
                 stopService = true,
                 expectedGeneration = ownGeneration,
@@ -168,56 +200,35 @@ class AuroraVpnService : VpnService() {
         expectedGeneration: Long? = null,
         serviceStartId: Int? = null,
     ) {
-        val teardown = synchronized(lifecycleLock) {
-            if (expectedGeneration != null && connectionGeneration != expectedGeneration) {
-                return
+        when (val stop = lifecycle.stop(expectedGeneration, serviceStartId)) {
+            VpnConnectionStop.Ignored -> return
+            is VpnConnectionStop.AlreadyInProgress -> {
+                if (stopService && stop.serviceStartId != null) {
+                    collectCleanupFailures({ stopSelfResult(stop.serviceStartId) })?.let { error ->
+                        AuroraLog.debug("tunnel service cleanup", error)
+                    }
+                }
             }
-            val teardownGeneration = ++connectionGeneration
-            val teardownStartId = serviceStartId ?: connectionStartId.takeIf { it > 0 }
-            connecting = false
-            val resources = runtime to connectingSession
-            runtime = null
-            connectingSession = null
-            connectionStartId = 0
-            Triple(teardownGeneration, resources, teardownStartId)
-        }
-        val (teardownGeneration, resources, teardownStartId) = teardown
-        val (runtimeToClose, sessionToClose) = resources
-        val resourceFailure = collectCleanupFailures(
-            { runtimeToClose?.close() },
-            { sessionToClose?.close() },
-        )
-        val lifecycleFailure = synchronized(lifecycleLock) {
-            // A newer CONNECT owns both the foreground notification and service start.
-            if (connectionGeneration != teardownGeneration) {
-                null
-            } else {
-                collectCleanupFailures(
-                    { stopForeground(STOP_FOREGROUND_REMOVE) },
-                    {
-                        if (stopService) {
-                            if (teardownStartId == null) {
-                                stopSelf()
-                            } else {
-                                stopSelfResult(teardownStartId)
+            is VpnConnectionStop.Started -> {
+                val failure = try {
+                    collectCleanupFailures(
+                        { stopForeground(STOP_FOREGROUND_REMOVE) },
+                        {
+                            if (stopService) {
+                                if (stop.serviceStartId == null) {
+                                    stopSelf()
+                                } else {
+                                    stopSelfResult(stop.serviceStartId)
+                                }
                             }
-                        }
-                    },
-                )
+                        },
+                    )
+                } finally {
+                    lifecycle.finishLifecycleStop(stop.teardownId)
+                }
+                failure?.let { error -> AuroraLog.debug("tunnel service cleanup", error) }
             }
         }
-        val failure = when {
-            resourceFailure == null -> lifecycleFailure
-            lifecycleFailure == null || resourceFailure === lifecycleFailure -> resourceFailure
-            else -> resourceFailure.apply {
-                addSuppressed(lifecycleFailure)
-            }
-        }
-        failure?.let { AuroraLog.debug("tunnel cleanup", it) }
-    }
-
-    private fun isCurrentConnection(generation: Long): Boolean {
-        return connecting && connectionGeneration == generation
     }
 
     private fun enterForeground() {
@@ -262,6 +273,60 @@ class AuroraVpnService : VpnService() {
         const val ipv6PrefixLength = 128
         const val ipv4Dns = "100.64.0.1"
         const val ipv6Dns = "fd77::1"
+    }
+}
+
+internal class CloseOnceNativePacketSession(
+    private val delegate: NativePacketSession,
+) : NativePacketSession {
+    private val closeStarted = AtomicBoolean()
+    private val closeCompletion = CountDownLatch(1)
+    private val closeFailure = AtomicReference<Throwable?>()
+
+    override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = delegate.ingressLocalPacket(packet)
+
+    override fun nextLocalPacket(): ByteArray = delegate.nextLocalPacket()
+
+    override fun close() {
+        if (closeStarted.compareAndSet(false, true)) {
+            try {
+                delegate.close()
+            } catch (error: Throwable) {
+                closeFailure.set(error)
+            } finally {
+                closeCompletion.countDown()
+            }
+        } else {
+            awaitCloseCompletion()
+        }
+        closeFailure.get()?.let { throw it }
+    }
+
+    private fun awaitCloseCompletion() {
+        var interruption: InterruptedException? = null
+        while (true) {
+            try {
+                closeCompletion.await()
+                break
+            } catch (error: InterruptedException) {
+                val first = interruption
+                if (first == null) {
+                    interruption = error
+                } else if (first !== error) {
+                    first.addSuppressed(error)
+                }
+            }
+        }
+        interruption?.let { error ->
+            Thread.currentThread().interrupt()
+            closeFailure.get()?.let { failure ->
+                if (failure !== error) {
+                    failure.addSuppressed(error)
+                }
+                throw failure
+            }
+            throw error
+        }
     }
 }
 

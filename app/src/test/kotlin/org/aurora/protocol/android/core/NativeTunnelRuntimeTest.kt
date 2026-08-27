@@ -6,8 +6,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -95,7 +99,7 @@ class NativeTunnelRuntimeTest {
         assertTrue(session.closed)
         assertTrue(device.closeAttempted)
         assertTrue(workers.isShutdown)
-        runtime.close()
+        assertSame(cleanupFailure, assertThrows(IOException::class.java) { runtime.close() })
     }
 
     @Test
@@ -117,7 +121,55 @@ class NativeTunnelRuntimeTest {
         assertTrue(session.closed)
         assertTrue(device.closeAttempted)
         assertTrue(workers.isShutdown)
-        runtime.close()
+        assertSame(cleanupFailure, assertThrows(IOException::class.java) { runtime.close() })
+    }
+
+    @Test
+    fun concurrentStopWaitsForFatalWorkerResourceCloseToFinish() {
+        val workerFailure = IOException("tunnel read failed")
+        val session = BlockingCloseNativePacketSession()
+        val device = FatalReadTunnelPacketDevice(workerFailure)
+        val workers = Executors.newFixedThreadPool(2)
+        val terminalFailure = LinkedBlockingQueue<Throwable>()
+        val runtime = NativeTunnelRuntime(session, device, workers) { terminalFailure.offer(it) }
+        val stopEntered = CountDownLatch(1)
+        val stopReturned = CountDownLatch(1)
+        val stopFailure = AtomicReference<Throwable?>()
+
+        runtime.start()
+        assertTrue(session.closeStarted.await(2, TimeUnit.SECONDS))
+        val stop = thread(start = true, name = "tunnel-close-join-test") {
+            stopEntered.countDown()
+            try {
+                runtime.close()
+            } catch (error: Throwable) {
+                stopFailure.set(error)
+            } finally {
+                stopReturned.countDown()
+            }
+        }
+
+        try {
+            assertTrue(stopEntered.await(2, TimeUnit.SECONDS))
+            assertFalse(stopReturned.await(200, TimeUnit.MILLISECONDS))
+            assertEquals(1, session.closeCalls.get())
+            assertEquals(0, device.closeCalls.get())
+
+            session.allowClose.countDown()
+            assertTrue(stopReturned.await(2, TimeUnit.SECONDS))
+            stop.join(2_000)
+            assertFalse(stop.isAlive)
+            assertEquals(null, stopFailure.get())
+            assertSame(workerFailure, terminalFailure.poll(2, TimeUnit.SECONDS))
+            assertEquals(1, session.closeCalls.get())
+            assertEquals(1, device.closeCalls.get())
+            assertTrue(workers.isShutdown)
+            assertTrue(workers.isTerminated)
+        } finally {
+            session.allowClose.countDown()
+            stop.join(2_000)
+            workers.shutdownNow()
+        }
     }
 
     private class FakeNativePacketSession : NativePacketSession {
@@ -208,6 +260,41 @@ class NativeTunnelRuntimeTest {
         override fun close() {
             closeAttempted = true
             throw closeFailure
+        }
+    }
+
+    private class BlockingCloseNativePacketSession : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+        val closeCalls = AtomicInteger()
+        val closeStarted = CountDownLatch(1)
+        val allowClose = CountDownLatch(1)
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = emptyList()
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            closeCalls.incrementAndGet()
+            closeStarted.countDown()
+            try {
+                check(allowClose.await(10, TimeUnit.SECONDS))
+            } finally {
+                deferredPackets.offer(byteArrayOf(0x45))
+            }
+        }
+    }
+
+    private class FatalReadTunnelPacketDevice(
+        private val readFailure: Throwable,
+    ) : TunnelPacketDevice {
+        val closeCalls = AtomicInteger()
+
+        override fun readPacket(): ByteArray? = throw readFailure
+
+        override fun writePacket(packet: ByteArray) = Unit
+
+        override fun close() {
+            closeCalls.incrementAndGet()
         }
     }
 }

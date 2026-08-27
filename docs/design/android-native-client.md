@@ -42,15 +42,40 @@ preferences are never accepted as a root-configuration channel.
 
 Missing, malformed, oversized, or non-canonical trust data prevents a tunnel
 from starting. The root asset is intentionally not stored in this repository;
-release packaging injects it after canonical validation.
+release packaging injects it only after its SHA-256 digest is matched against
+an independently reviewed release value and the pinned Core revision confirms
+its canonical encoding.
 
 ### Provisioning and State
 
-Provisioning input is size-bounded before it is read. It is encrypted with an
-Android Keystore AES-GCM key before being persisted. Reservation metadata is
-persisted separately in the same encrypted store so reconnects never reuse an
-access hint. Logs and UI state expose only status classifications, never
-provisioning bytes, root data, issuer responses, or packet contents.
+Provisioning input is size-bounded before it is read. The selected entry and a
+bounded reservation ledger are committed together in one AES-GCM encrypted,
+`AtomicFile`-backed state under an Android Keystore key. Consumption first
+rewrites that state without the active entry and only then returns the entry,
+so a failed or interrupted write cannot expose an unledgered reservation.
+
+The ledger stores only the SHA-256 digest of the imported source plus at most
+64 spent-hint keys and their expiries; it never stores a second plaintext copy
+of the source. Keys supplied by the caller's FFI envelope have no encoded
+expiry, so they are conservatively retained with a `Long.MAX_VALUE` sentinel.
+The caller, persisted, and newly returned keys are deduplicated and must fit the
+same 64-key bound before the combined state commits. Entries with real expiries
+are pruned before reservation. Importing a different source resets the prior
+source's ledger, matching the Apple active source replacement policy;
+consequently switching from source A to B and later back to A is an explicit
+history reset, not a promise to remember every source ever imported.
+Reimporting the same wallet retains its complete hint union and advances to a
+later usable entry even if a later envelope omits hints supplied earlier.
+
+Normal consumption or active-reservation clearing preserves the ledger and its
+Keystore key. Authenticated-state corruption remains fail-closed and is not
+silently deleted; recovery requires a deliberate internal purge (or an Android
+application-data reset), which removes both the blob and key and therefore also
+resets local reservation history. Legacy reservation-only blobs migrate by
+conservatively carrying their active spent-hint key forward until the next
+validated source binds it. Logs and UI state expose only status
+classifications, never provisioning bytes, root data, issuer responses, or
+packet contents.
 
 ## VPN Lifecycle
 
@@ -91,10 +116,12 @@ released. ABI operation identifiers live in one Kotlin internal definition and
 are covered by bridge tests.
 
 Provisioning reservation metadata is emitted by a Core JSON operation. Kotlin
-may validate JSON framing and field sizes, but it does not parse the underlying
-binary reservation envelope. This Core operation is a prerequisite for Android
-storage because replay-protection identifiers must be persisted without
-duplicating protocol parsing in the platform adapter.
+validates JSON framing and field sizes but does not parse the provisioning
+source or any Aurora network message. It does parse Core's private mobile-FFI
+reservation envelope (source length plus spent-hint list) so it can hash the
+opaque source and append durable spent-hint keys before invoking Core. The
+strict envelope parser mirrors Core's 16 MiB source and 64-key bounds. Core
+alone validates the source and selects the next wallet entry.
 
 ## HTTP Boundary
 
@@ -110,7 +137,12 @@ response limit before the response is passed to Core.
   round-trips, issuer request validation, redirect rejection, response bounds,
   tunnel worker shutdown, and JNI result framing.
 - Native build checks produce ELF libraries for both supported ABIs and verify
-  their exported Core symbols.
+  the embedded clean-Core revision and Go/toolchain build settings, exact
+  reviewed Core/JNI interface, dependency linkage, and 16 KiB LOAD-segment
+  alignment. The APK is also checked for 16 KiB zip alignment, the exact
+  permission/component surface, and its compiled backup and network policy so
+  the native client remains compatible with 4 KiB and 16 KiB Android devices
+  without silently widening its platform access.
 - Android builds assemble debug and release variants, lint the application,
   and run JVM tests without a connected device.
 - Connected-device validation exercises VPN consent, foreground service

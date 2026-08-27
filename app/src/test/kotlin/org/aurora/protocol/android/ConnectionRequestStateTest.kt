@@ -38,4 +38,13 @@ class ConnectionRequestStateTest {
         assertTrue(state.consumeConnectionRequest())
         assertFalse(state.consumeConnectionRequest())
     }
+
+    @Test
+    fun restoresPendingConnectionAfterActivityRecreation() {
+        val state = ConnectionRequestState(initialConnectRequested = true)
+
+        assertTrue(state.connectRequested)
+        assertFalse(state.beginImport())
+        assertTrue(state.consumeConnectionRequest())
+    }
 }

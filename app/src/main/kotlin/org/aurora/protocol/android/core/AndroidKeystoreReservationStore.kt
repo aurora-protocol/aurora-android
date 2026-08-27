@@ -20,14 +20,26 @@ internal class AndroidKeystoreReservationStore(context: Context) : ReservationSt
         cipher = cipher,
     )
 
-    override fun save(reservation: CoreReservation) {
-        store.save(reservation)
+    override fun save(
+        reservation: CoreReservation,
+        sourceDigest: ByteArray,
+        nowUnix: Long,
+        callerSpentHintKeys: List<ByteArray>,
+    ) {
+        store.save(reservation, sourceDigest, nowUnix, callerSpentHintKeys)
     }
+
+    override fun spentHintKeys(sourceDigest: ByteArray, nowUnix: Long): List<ByteArray> =
+        store.spentHintKeys(sourceDigest, nowUnix)
 
     override fun load(): CoreReservation? = store.load()
 
-    override fun clear() {
-        store.clear()
+    override fun consume(): CoreReservation? = store.consume()
+
+    override fun clear() = store.clear()
+
+    override fun purge() {
+        store.purge()
         cipher.clearKey()
     }
 }
@@ -52,9 +64,6 @@ private class AndroidKeystoreReservationCipher : ReservationCipher {
                 System.arraycopy(iv, 0, envelope, envelopeHeaderBytes, iv.size)
                 System.arraycopy(ciphertext, 0, envelope, envelopeHeaderBytes + iv.size, ciphertext.size)
             }
-        } catch (error: Exception) {
-            clearKey()
-            throw error
         } finally {
             iv?.fill(0)
             ciphertext?.fill(0)
@@ -75,9 +84,6 @@ private class AndroidKeystoreReservationCipher : ReservationCipher {
             cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(tagBits, iv))
             cipher.updateAAD(associatedData)
             return cipher.doFinal(encryptedPayload)
-        } catch (error: Exception) {
-            clearKey()
-            throw error
         } finally {
             iv?.fill(0)
             encryptedPayload?.fill(0)
@@ -89,7 +95,8 @@ private class AndroidKeystoreReservationCipher : ReservationCipher {
         try {
             keyStore.deleteEntry(keyAlias)
         } catch (_: Exception) {
-            // A stale encrypted blob is still rejected and cleared by the storage layer.
+            // purge() deletes the encrypted blob first, so a stale key retains no
+            // reservation data and can be removed by a later explicit purge.
         }
     }
 
@@ -181,7 +188,7 @@ private class AndroidReservationBlobStore(context: Context) : EncryptedReservati
 
     private companion object {
         const val fileName = "aurora-reservation.bin"
-        const val maximumEncryptedBytes = (16 * 1024 * 1024) + 128
+        const val maximumEncryptedBytes = (16 * 1024 * 1024) + (8 * 1024) + 256
         val processLock = Any()
     }
 }

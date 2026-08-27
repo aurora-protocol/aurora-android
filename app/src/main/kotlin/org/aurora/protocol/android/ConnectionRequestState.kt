@@ -1,9 +1,9 @@
 package org.aurora.protocol.android
 
-internal class ConnectionRequestState {
+internal class ConnectionRequestState(initialConnectRequested: Boolean = false) {
     var importInProgress: Boolean = false
         private set
-    var connectRequested: Boolean = false
+    var connectRequested: Boolean = initialConnectRequested
         private set
 
     fun beginImport(): Boolean {

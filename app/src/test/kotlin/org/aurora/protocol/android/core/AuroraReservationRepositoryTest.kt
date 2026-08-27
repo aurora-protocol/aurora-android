@@ -1,7 +1,16 @@
 package org.aurora.protocol.android.core
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -14,7 +23,7 @@ class AuroraReservationRepositoryTest {
         val storage = RecordingStorage()
         val repository = AuroraReservationRepository(core, storage)
 
-        repository.reserveAndPersist(byteArrayOf(0x01), 123)
+        repository.reserveAndPersist(reservationRequest(byteArrayOf(0x01)), 122)
 
         assertArrayEquals(byteArrayOf(0x01, 0x02), storage.provisioning)
         assertArrayEquals(ByteArray(responsePayload.size), responsePayload)
@@ -37,36 +46,395 @@ class AuroraReservationRepositoryTest {
         }
     }
 
-    private fun encodedReservation(): ByteArray {
-        val spentHintKey = Base64.getEncoder().encodeToString(ByteArray(48))
+    @Test
+    fun serializesOneTimeConsumptionAcrossConcurrentCallers() {
+        val storage = CoordinatedStorage()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> throw AssertionError("not used") },
+            storage,
+        )
+        val results = arrayOfNulls<CoreReservation>(2)
+        val failures = arrayOfNulls<Throwable>(2)
+        val first = Thread {
+            try {
+                results[0] = repository.consume()
+            } catch (error: Throwable) {
+                failures[0] = error
+            }
+        }
+        var second: Thread? = null
+        try {
+            first.start()
+            assertTrue(storage.firstLoadEntered.await(2, TimeUnit.SECONDS))
+            val secondThread = Thread {
+                try {
+                    results[1] = repository.consume()
+                } catch (error: Throwable) {
+                    failures[1] = error
+                }
+            }
+            second = secondThread
+            secondThread.start()
+
+            val secondWasSerialized = waitForBlockedCaller(secondThread, storage.secondLoadEntered)
+            storage.releaseFirstLoad.countDown()
+            first.join(2_000)
+            secondThread.join(2_000)
+
+            assertTrue(secondWasSerialized)
+            assertFalse(first.isAlive)
+            assertFalse(secondThread.isAlive)
+            failures.forEach { assertNull(it) }
+            assertEquals(1, results.count { it != null })
+        } finally {
+            storage.releaseFirstLoad.countDown()
+            first.join(5_000)
+            second?.join(5_000)
+            results.forEach { it?.close() }
+        }
+    }
+
+    @Test
+    fun interruptedImportFailsBeforeCoreAndClearsItsRequest() {
+        val request = byteArrayOf(0x01, 0x02)
+        val coreCalls = AtomicInteger()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ ->
+                coreCalls.incrementAndGet()
+                throw AssertionError("interrupted import reached Core")
+            },
+            RecordingStorage(),
+        )
+
+        Thread.currentThread().interrupt()
+        try {
+            assertThrows(InterruptedException::class.java) {
+                repository.reserveAndPersist(request, 123)
+            }
+        } finally {
+            Thread.interrupted()
+        }
+
+        assertEquals(0, coreCalls.get())
+        assertArrayEquals(ByteArray(request.size), request)
+    }
+
+    @Test
+    fun rejectsASecondReservationWhileAnActivityPredecessorIsStillWorking() {
+        val firstEnteredCore = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val coreCalls = AtomicInteger()
+        val client = NativeProvisioningReservationClient { _, _ ->
+            coreCalls.incrementAndGet()
+            firstEnteredCore.countDown()
+            assertTrue(releaseFirst.await(5, TimeUnit.SECONDS))
+            CoreResponse(CoreStatus.OK, encodedReservation())
+        }
+        val repository = AuroraReservationRepository(client, RecordingStorage())
+        val firstRequest = reservationRequest(byteArrayOf(0x01))
+        val secondRequest = reservationRequest(byteArrayOf(0x02))
+        val firstFailure = arrayOfNulls<Throwable>(1)
+        val first = Thread {
+            try {
+                repository.reserveAndPersist(firstRequest, 122)
+            } catch (error: Throwable) {
+                firstFailure[0] = error
+            }
+        }
+
+        try {
+            first.start()
+            assertTrue(firstEnteredCore.await(2, TimeUnit.SECONDS))
+
+            assertThrows(IllegalStateException::class.java) {
+                repository.reserveAndPersist(secondRequest, 122)
+            }
+
+            assertEquals(1, coreCalls.get())
+            assertArrayEquals(ByteArray(secondRequest.size), secondRequest)
+        } finally {
+            releaseFirst.countDown()
+            first.join(5_000)
+        }
+
+        assertFalse(first.isAlive)
+        assertNull(firstFailure[0])
+        assertArrayEquals(ByteArray(firstRequest.size), firstRequest)
+    }
+
+    @Test
+    fun identicalWalletReimportPassesDurableHistoryBackToCore() {
+        val blobs = RepositoryMemoryBlobStore()
+        val storage = EncryptedReservationStore(blobs, RepositoryCipher)
+        val firstKey = ByteArray(48) { 0x41 }
+        val secondKey = ByteArray(48) { 0x42 }
+        val seenFirstKey = mutableListOf<Boolean>()
+        val client = NativeProvisioningReservationClient { request, _ ->
+            NativeProvisioningReservationRequest.takeOwnership(request).use { parsed ->
+                val hasFirst = parsed.containsSpentHintKey(firstKey)
+                seenFirstKey += hasFirst
+                CoreResponse(
+                    CoreStatus.OK,
+                    encodedReservation(
+                        provisioning = if (hasFirst) byteArrayOf(0x02) else byteArrayOf(0x01),
+                        spentHintKey = if (hasFirst) secondKey else firstKey,
+                        expiry = 500,
+                    ),
+                )
+            }
+        }
+        val repository = AuroraReservationRepository(client, storage)
+        val source = byteArrayOf(0x11, 0x22)
+
+        repository.reserveAndPersist(reservationRequest(source), 100)
+        val first = requireNotNull(repository.consume())
+        try {
+            assertArrayEquals(firstKey, first.spentHintKey)
+        } finally {
+            first.close()
+        }
+
+        repository.reserveAndPersist(reservationRequest(source), 100)
+        val second = requireNotNull(repository.consume())
+        try {
+            assertArrayEquals(secondKey, second.spentHintKey)
+        } finally {
+            second.close()
+        }
+
+        assertEquals(listOf(false, true), seenFirstKey)
+    }
+
+    @Test
+    fun callerHintsRemainSpentWhenAReimportOmitsThem() {
+        val blobs = RepositoryMemoryBlobStore()
+        val storage = EncryptedReservationStore(blobs, RepositoryCipher)
+        val callerKey = ByteArray(48) { 0x31 }
+        val firstResultKey = ByteArray(48) { 0x32 }
+        val secondResultKey = ByteArray(48) { 0x33 }
+        val source = byteArrayOf(0x21, 0x22)
+        var call = 0
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { request, _ ->
+                NativeProvisioningReservationRequest.takeOwnership(request).use { parsed ->
+                    when (call++) {
+                        0 -> {
+                            assertTrue(parsed.containsSpentHintKey(callerKey))
+                            assertFalse(parsed.containsSpentHintKey(firstResultKey))
+                            CoreResponse(
+                                CoreStatus.OK,
+                                encodedReservation(spentHintKey = firstResultKey, expiry = 500),
+                            )
+                        }
+                        else -> {
+                            assertTrue(parsed.containsSpentHintKey(callerKey))
+                            assertTrue(parsed.containsSpentHintKey(firstResultKey))
+                            CoreResponse(
+                                CoreStatus.OK,
+                                encodedReservation(spentHintKey = secondResultKey, expiry = 600),
+                            )
+                        }
+                    }
+                }
+            },
+            storage,
+        )
+        val firstRequest = reservationRequest(source, listOf(callerKey))
+
+        repository.reserveAndPersist(firstRequest, 100)
+        repository.consume()?.close()
+        repository.reserveAndPersist(reservationRequest(source), 100)
+        repository.consume()?.close()
+
+        assertArrayEquals(ByteArray(firstRequest.size), firstRequest)
+        assertEquals(2, call)
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(source)
+        val durable = storage.spentHintKeys(digest, 501)
+        try {
+            assertEquals(2, durable.size)
+            assertTrue(durable.any { it.contentEquals(callerKey) })
+            assertTrue(durable.any { it.contentEquals(secondResultKey) })
+            assertFalse(durable.any { it.contentEquals(firstResultKey) })
+        } finally {
+            durable.forEach { it.fill(0) }
+            digest.fill(0)
+        }
+    }
+
+    @Test
+    fun deduplicatesCallerAndPersistedHintsBeforeCallingCore() {
+        val source = byteArrayOf(0x31)
+        val persistedKey = ByteArray(48) { 0x51 }
+        val callerKey = ByteArray(48) { 0x52 }
+        val resultKey = ByteArray(48) { 0x53 }
+        val storage = EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher)
+        NativeProvisioningReservationRequest.takeOwnership(reservationRequest(source)).use { parsed ->
+            storage.save(
+                reservation(spentHintKey = persistedKey, expiry = 500),
+                parsed.sourceDigest(),
+                100,
+            )
+        }
+        storage.consume()?.close()
+        var receivedCount = -1
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { request, _ ->
+                receivedCount = request[Int.SIZE_BYTES + source.size].toInt() and 0xff
+                CoreResponse(
+                    CoreStatus.OK,
+                    encodedReservation(spentHintKey = resultKey, expiry = 500),
+                )
+            },
+            storage,
+        )
+
+        repository.reserveAndPersist(reservationRequest(source, listOf(persistedKey, callerKey)), 100)
+
+        assertEquals(2, receivedCount)
+    }
+
+    @Test
+    fun rejectsACoreResultThatWasAlreadyPersisted() {
+        val source = byteArrayOf(0x61)
+        val spentHintKey = ByteArray(48) { 0x62 }
+        val storage = EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher)
+        NativeProvisioningReservationRequest.takeOwnership(reservationRequest(source)).use { parsed ->
+            storage.save(
+                reservation(spentHintKey = spentHintKey, expiry = 500),
+                parsed.sourceDigest(),
+                100,
+            )
+        }
+        storage.consume()?.close()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ ->
+                CoreResponse(
+                    CoreStatus.OK,
+                    encodedReservation(spentHintKey = spentHintKey, expiry = 500),
+                )
+            },
+            storage,
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.reserveAndPersist(reservationRequest(source), 100)
+        }
+
+        assertNull(storage.load())
+    }
+
+    @Test
+    fun callerHintCommitFailureScrubsInputAndReturnsNoReservation() {
+        val blobs = RepositoryMemoryBlobStore().apply {
+            writeFailure = IllegalStateException("atomic write failed")
+        }
+        val responsePayload = encodedReservation(
+            spentHintKey = ByteArray(48) { 0x72 },
+            expiry = 500,
+        )
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> CoreResponse(CoreStatus.OK, responsePayload) },
+            EncryptedReservationStore(blobs, RepositoryCipher),
+        )
+        val request = reservationRequest(
+            source = byteArrayOf(0x71),
+            spentHintKeys = listOf(ByteArray(48) { 0x70 }),
+        )
+
+        assertThrows(ReservationStorageException::class.java) {
+            repository.reserveAndPersist(request, 100)
+        }
+
+        assertArrayEquals(ByteArray(request.size), request)
+        assertArrayEquals(ByteArray(responsePayload.size), responsePayload)
+        assertNull(blobs.read())
+    }
+
+    @Test
+    fun rejectsACoreResultAlreadyNamedByTheCallerEnvelope() {
+        val callerKey = ByteArray(48) { 0x66 }
+        val storage = EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher)
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ ->
+                CoreResponse(
+                    CoreStatus.OK,
+                    encodedReservation(spentHintKey = callerKey, expiry = 500),
+                )
+            },
+            storage,
+        )
+        val request = reservationRequest(byteArrayOf(0x65), listOf(callerKey))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.reserveAndPersist(request, 100)
+        }
+
+        assertArrayEquals(ByteArray(request.size), request)
+        assertNull(storage.load())
+    }
+
+    private fun encodedReservation(
+        provisioning: ByteArray = byteArrayOf(0x01, 0x02),
+        spentHintKey: ByteArray = ByteArray(48),
+        expiry: Long = 123,
+    ): ByteArray {
+        val encodedProvisioning = Base64.getEncoder().encodeToString(provisioning)
+        val encodedSpentHintKey = Base64.getEncoder().encodeToString(spentHintKey)
         val relayBucketId = Base64.getEncoder().encodeToString(ByteArray(16))
         return """
             {
-              "provisioning_base64":"AQI=",
-              "spent_hint_key_base64":"$spentHintKey",
+              "provisioning_base64":"$encodedProvisioning",
+              "spent_hint_key_base64":"$encodedSpentHintKey",
               "relay_bucket_id_base64":"$relayBucketId",
-              "access_hint_expiry_unix":123
+              "access_hint_expiry_unix":$expiry
             }
         """.trimIndent().toByteArray()
+    }
+
+    private fun reservation(spentHintKey: ByteArray, expiry: Long): CoreReservation {
+        return CoreReservation(
+            provisioning = byteArrayOf(0x01),
+            spentHintKey = spentHintKey.copyOf(),
+            relayBucketId = ByteArray(16),
+            accessHintExpiryUnix = expiry,
+        )
     }
 
     private class RecordingStorage : ReservationStore {
         var provisioning = ByteArray(0)
 
-        override fun save(reservation: CoreReservation) {
+        override fun save(
+            reservation: CoreReservation,
+            sourceDigest: ByteArray,
+            nowUnix: Long,
+            callerSpentHintKeys: List<ByteArray>,
+        ) {
             provisioning = reservation.provisioning.copyOf()
             reservation.close()
         }
 
+        override fun spentHintKeys(sourceDigest: ByteArray, nowUnix: Long): List<ByteArray> = emptyList()
+
         override fun load(): CoreReservation? = null
 
+        override fun consume(): CoreReservation? = null
+
         override fun clear() = Unit
+
+        override fun purge() = Unit
     }
 
     private class ConsumingStorage : ReservationStore {
         var cleared = false
 
-        override fun save(reservation: CoreReservation) = reservation.close()
+        override fun save(
+            reservation: CoreReservation,
+            sourceDigest: ByteArray,
+            nowUnix: Long,
+            callerSpentHintKeys: List<ByteArray>,
+        ) = reservation.close()
+
+        override fun spentHintKeys(sourceDigest: ByteArray, nowUnix: Long): List<ByteArray> = emptyList()
 
         override fun load(): CoreReservation = CoreReservation(
             provisioning = byteArrayOf(0x01, 0x02),
@@ -78,5 +446,115 @@ class AuroraReservationRepositoryTest {
         override fun clear() {
             cleared = true
         }
+
+        override fun consume(): CoreReservation? {
+            val reservation = load()
+            clear()
+            return reservation
+        }
+
+        override fun purge() = clear()
+    }
+
+    private class CoordinatedStorage : ReservationStore {
+        val firstLoadEntered = CountDownLatch(1)
+        val releaseFirstLoad = CountDownLatch(1)
+        val secondLoadEntered = CountDownLatch(1)
+        private val loadCount = AtomicInteger()
+
+        @Volatile
+        private var available = true
+
+        override fun save(
+            reservation: CoreReservation,
+            sourceDigest: ByteArray,
+            nowUnix: Long,
+            callerSpentHintKeys: List<ByteArray>,
+        ) = reservation.close()
+
+        override fun spentHintKeys(sourceDigest: ByteArray, nowUnix: Long): List<ByteArray> = emptyList()
+
+        override fun load(): CoreReservation? {
+            val wasAvailable = available
+            when (loadCount.incrementAndGet()) {
+                1 -> {
+                    firstLoadEntered.countDown()
+                    assertTrue(releaseFirstLoad.await(5, TimeUnit.SECONDS))
+                }
+                2 -> secondLoadEntered.countDown()
+            }
+            if (!wasAvailable) {
+                return null
+            }
+            return CoreReservation(
+                provisioning = byteArrayOf(0x01),
+                spentHintKey = ByteArray(48),
+                relayBucketId = ByteArray(16),
+                accessHintExpiryUnix = 123,
+            )
+        }
+
+        override fun clear() {
+            available = false
+        }
+
+        override fun consume(): CoreReservation? {
+            val reservation = load() ?: return null
+            clear()
+            return reservation
+        }
+
+        override fun purge() = clear()
+    }
+
+    private object RepositoryCipher : ReservationCipher {
+        override fun encrypt(plaintext: ByteArray): ByteArray = transform(plaintext)
+
+        override fun decrypt(ciphertext: ByteArray): ByteArray = transform(ciphertext)
+
+        private fun transform(input: ByteArray): ByteArray = ByteArray(input.size) { index ->
+            (input[index].toInt() xor 0x5a).toByte()
+        }
+    }
+
+    private class RepositoryMemoryBlobStore : EncryptedReservationBlobStore {
+        private var value: ByteArray? = null
+        var writeFailure: RuntimeException? = null
+
+        override fun write(encrypted: ByteArray) {
+            writeFailure?.let { throw it }
+            value = encrypted.copyOf()
+        }
+
+        override fun read(): ByteArray? = value?.copyOf()
+
+        override fun clear() {
+            value?.fill(0)
+            value = null
+        }
+    }
+
+    private fun waitForBlockedCaller(thread: Thread, enteredStorage: CountDownLatch): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (thread.state == Thread.State.BLOCKED) {
+                return true
+            }
+            if (enteredStorage.count == 0L) {
+                return false
+            }
+            Thread.yield()
+        }
+        return thread.state == Thread.State.BLOCKED
+    }
+
+    private fun reservationRequest(source: ByteArray, spentHintKeys: List<ByteArray> = emptyList()): ByteArray {
+        return ByteBuffer.allocate(Int.SIZE_BYTES + source.size + 1 + spentHintKeys.size * 48)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putInt(source.size)
+            .put(source)
+            .put(spentHintKeys.size.toByte())
+            .apply { spentHintKeys.forEach(::put) }
+            .array()
     }
 }

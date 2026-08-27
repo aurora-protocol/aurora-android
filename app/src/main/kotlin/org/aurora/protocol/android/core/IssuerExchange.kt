@@ -35,6 +35,7 @@ internal class HttpsIssuerExchange(
 ) : CancellableIssuerExchange {
     private val exchangeLock = Any()
     private var activeConnection: IssuerHttpConnection? = null
+    private var exchangeInProgress = false
     private var cancelled = false
 
     override fun exchange(work: NativeIssuerWork): ByteArray {
@@ -43,33 +44,65 @@ internal class HttpsIssuerExchange(
             "invalid issuer request body"
         }
         val endpoint = endpointFor(work)
-        val connection = connectionFactory.open(endpoint)
-        val accepted = synchronized(exchangeLock) {
-            if (cancelled) {
-                false
-            } else {
-                activeConnection = connection
-                true
-            }
+        synchronized(exchangeLock) {
+            check(!cancelled) { "issuer exchange was cancelled" }
+            check(!exchangeInProgress) { "issuer exchange is already in progress" }
+            exchangeInProgress = true
         }
-        if (!accepted) {
-            connection.close()
-            throw IllegalStateException("issuer exchange was cancelled")
-        }
+
+        var connection: IssuerHttpConnection? = null
+        var responseBody: InputStream? = null
+        var responseBytes: ByteArray? = null
+        var primaryFailure: Throwable? = null
         try {
-            val response = connection.post(work.requestBody)
+            val openedConnection = connectionFactory.open(endpoint)
+            connection = openedConnection
+            val accepted = synchronized(exchangeLock) {
+                if (cancelled) {
+                    false
+                } else {
+                    activeConnection = openedConnection
+                    true
+                }
+            }
+            check(accepted) { "issuer exchange was cancelled" }
+
+            val response = openedConnection.post(work.requestBody)
+            responseBody = response.body
             require(response.statusCode == HttpsURLConnection.HTTP_OK) { "issuer rejected request" }
             require(isBinaryContentType(response.contentType)) { "issuer response content type is invalid" }
             require(response.contentLength in -1..maximumIssuerResponseBytes.toLong()) { "issuer response exceeds size limit" }
-            val body = response.body ?: throw IllegalStateException("issuer response body is unavailable")
-            return body.use { readBounded(it) }
+            val body = responseBody ?: throw IllegalStateException("issuer response body is unavailable")
+            val result = readBounded(body)
+            responseBytes = result
+            return result
+        } catch (error: Throwable) {
+            primaryFailure = error
+            throw error
         } finally {
+            var failure = primaryFailure
+            try {
+                responseBody?.close()
+            } catch (error: Throwable) {
+                failure = combineFailures(failure, error)
+            }
+            try {
+                connection?.close()
+            } catch (error: Throwable) {
+                failure = combineFailures(failure, error)
+            }
             synchronized(exchangeLock) {
                 if (activeConnection === connection) {
                     activeConnection = null
                 }
+                exchangeInProgress = false
             }
-            connection.close()
+            if (primaryFailure == null) {
+                failure?.let { cleanupFailure ->
+                    responseBytes?.fill(0)
+                    throw cleanupFailure
+                }
+            }
         }
     }
 
@@ -82,17 +115,34 @@ internal class HttpsIssuerExchange(
     }
 
     internal fun endpointFor(work: NativeIssuerWork): URL {
+        require(work.issuerUrl.toExternalForm().utf8Size() in 1..maximumIssuerComponentBytes) {
+            "invalid issuer origin"
+        }
         val base = work.issuerUrl.toURI()
         require(base.scheme.equals("https", ignoreCase = true) && base.host != null && base.userInfo == null) {
             "invalid issuer origin"
         }
-        require(work.issuerCarrierPath.isNotEmpty() && work.issuerCarrierPath.length <= maximumIssuerPathCharacters) {
+        require(base.rawAuthority != null && !(base.port == -1 && base.rawAuthority.endsWith(':'))) {
+            "invalid issuer origin"
+        }
+        require(base.port == -1 || base.port in 1..65_535) { "invalid issuer origin" }
+        require(base.rawPath.isNullOrEmpty()) { "invalid issuer origin" }
+        require(base.rawQuery == null && base.rawFragment == null) { "invalid issuer origin" }
+        require(work.issuerCarrierPath.utf8Size() in 2..maximumIssuerComponentBytes) {
             "invalid issuer path"
         }
-        require(work.issuerCarrierPath.startsWith("/") && !work.issuerCarrierPath.startsWith("//")) {
+        require(
+            work.issuerCarrierPath.startsWith("/") &&
+                !work.issuerCarrierPath.contains("//") &&
+                !work.issuerCarrierPath.endsWith('/'),
+        ) {
             "invalid issuer path"
         }
         require(!work.issuerCarrierPath.contains('?') && !work.issuerCarrierPath.contains('#') && !work.issuerCarrierPath.contains('\\')) {
+            "invalid issuer path"
+        }
+        val carrierPath = URI(null, null, work.issuerCarrierPath, null)
+        require(carrierPath.rawPath == work.issuerCarrierPath && carrierPath.normalize().rawPath == work.issuerCarrierPath) {
             "invalid issuer path"
         }
         val endpoint = URI(base.scheme, null, base.host, base.port, work.issuerCarrierPath, null, null).toURL()
@@ -139,9 +189,21 @@ internal class HttpsIssuerExchange(
         return mediaType.equals("application/octet-stream", ignoreCase = true)
     }
 
+    private fun combineFailures(first: Throwable?, next: Throwable): Throwable {
+        if (first == null) {
+            return next
+        }
+        if (first !== next) {
+            first.addSuppressed(next)
+        }
+        return first
+    }
+
+    private fun String.utf8Size(): Int = toByteArray(Charsets.UTF_8).size
+
     private companion object {
         const val maximumIssuerRequestBytes = 8 * 1024
-        const val maximumIssuerPathCharacters = 8 * 1024
+        const val maximumIssuerComponentBytes = 2 * 1024
         const val maximumIssuerResponseBytes = 1024 * 1024
         const val initialResponseBytes = 8 * 1024
         const val readChunkBytes = 8 * 1024

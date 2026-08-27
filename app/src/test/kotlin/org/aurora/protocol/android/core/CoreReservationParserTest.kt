@@ -63,4 +63,26 @@ class CoreReservationParserTest {
             CoreReservationParser.decode(encoded)
         }
     }
+
+    @Test
+    fun rejectsMalformedUtf8AndNonCanonicalReservationBase64() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CoreReservationParser.decode(byteArrayOf(0xc3.toByte(), 0x28))
+        }
+
+        val spentHintKey = Base64.getEncoder().encodeToString(ByteArray(48))
+        val unpaddedRelayBucketId = Base64.getEncoder().encodeToString(ByteArray(16)).removeSuffix("==")
+        val encoded = """
+            {
+              "provisioning_base64":"AQ==",
+              "spent_hint_key_base64":"$spentHintKey",
+              "relay_bucket_id_base64":"$unpaddedRelayBucketId",
+              "access_hint_expiry_unix":1
+            }
+        """.trimIndent().toByteArray()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            CoreReservationParser.decode(encoded)
+        }
+    }
 }

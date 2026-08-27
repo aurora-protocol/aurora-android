@@ -1,14 +1,24 @@
 <resources>
     <string name="app_name">Aurora</string>
-    <string name="action_import">Import</string>
+    <string name="provisioning_import_label">Provisioning code</string>
+    <string name="provisioning_import_hint">Paste the provisioning code</string>
+    <string name="action_import">Import provisioning code</string>
+    <string name="action_importing">Importing provisioning code…</string>
     <string name="action_connect">Connect</string>
+    <string name="action_waiting_for_permission">Waiting for permission…</string>
     <string name="action_disconnect">Disconnect</string>
+    <string name="status_label">Status</string>
     <string name="status_ready">Ready</string>
-    <string name="status_importing">Importing</string>
-    <string name="status_import_failed">Import failed</string>
-    <string name="status_connecting">Connecting</string>
-    <string name="status_disconnected">Disconnected</string>
-    <string name="status_vpn_permission_required">VPN permission required</string>
+    <string name="status_importing">Importing provisioning code…</string>
+    <string name="status_import_succeeded">Provisioning code imported</string>
+    <string name="status_import_failed">Could not import the provisioning code. Check the code and try again.</string>
+    <string name="status_waiting_for_permission">Waiting for permission…</string>
+    <string name="status_permission_request_failed">Could not complete the permission request. Try connecting again.</string>
+    <string name="status_connecting">VPN start requested</string>
+    <string name="status_connection_failed">Could not request a VPN connection. Try again.</string>
+    <string name="status_disconnect_requested">VPN stop requested</string>
+    <string name="status_disconnect_failed">Could not request VPN disconnection. Try again.</string>
+    <string name="status_vpn_permission_required">VPN permission is required to connect</string>
     <string name="notification_channel_name">Aurora VPN</string>
     <string name="notification_active">VPN active</string>
 </resources>

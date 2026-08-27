@@ -16,7 +16,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
+import org.aurora.protocol.android.core.AuroraLog
 import org.aurora.protocol.android.core.NativeSessionController
 import org.aurora.protocol.android.core.NativeTunnelRuntime
 import org.aurora.protocol.android.core.TunnelPacketDevice
@@ -27,11 +27,14 @@ class AuroraVpnService : VpnService() {
     private var runtime: NativeTunnelRuntime? = null
     private var connectingSession: NativeSessionController? = null
     private var connecting = false
+    private var connectionGeneration = 0L
+    private var connectionStartId = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action ?: actionConnect) {
-            actionConnect -> startTunnel()
-            actionDisconnect -> stopTunnel(stopService = true)
+        when (vpnServiceCommand(intent?.action)) {
+            VpnServiceCommand.CONNECT -> startTunnel(startId)
+            VpnServiceCommand.DISCONNECT -> stopTunnel(stopService = true, serviceStartId = startId)
+            null -> stopSelfResult(startId)
         }
         return Service.START_NOT_STICKY
     }
@@ -49,23 +52,36 @@ class AuroraVpnService : VpnService() {
 
     override fun onBind(intent: Intent?): IBinder? = super.onBind(intent)
 
-    private fun startTunnel() {
-        synchronized(lifecycleLock) {
+    private fun startTunnel(serviceStartId: Int) {
+        val ownGeneration = synchronized(lifecycleLock) {
             if (connecting || runtime != null) {
+                // The work is shared, but this newer start request now owns its lifecycle.
+                connectionStartId = serviceStartId
                 return
             }
             connecting = true
+            connectionStartId = serviceStartId
+            ++connectionGeneration
         }
-        enterForeground()
         try {
+            enterForeground()
             commandExecutor.execute {
                 var device: FileDescriptorTunnelDevice? = null
+                var candidateRuntime: NativeTunnelRuntime? = null
                 val session = NativeSessionController()
-                synchronized(lifecycleLock) {
-                    if (!connecting) {
-                        return@execute
+                val acceptedSession = synchronized(lifecycleLock) {
+                    if (!isCurrentConnection(ownGeneration)) {
+                        false
+                    } else {
+                        connectingSession = session
+                        true
                     }
-                    connectingSession = session
+                }
+                if (!acceptedSession) {
+                    collectCleanupFailures(session::close)?.let {
+                        AuroraLog.debug("cancelled tunnel cleanup", it)
+                    }
+                    return@execute
                 }
                 try {
                     val reservation = (application as AuroraApplication).reservations.consume()
@@ -78,33 +94,55 @@ class AuroraVpnService : VpnService() {
                         reservation.close()
                     }
                     val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
-                    val establishedRuntime = NativeTunnelRuntime(session, establishedDevice) { _ ->
-                        stopTunnel(stopService = true)
+                    val establishedRuntime = NativeTunnelRuntime(session, establishedDevice) { error ->
+                        AuroraLog.debug("tunnel runtime", error)
+                        stopTunnel(
+                            stopService = true,
+                            expectedGeneration = ownGeneration,
+                        )
                     }
-                    synchronized(lifecycleLock) {
-                        if (!connecting) {
-                            establishedRuntime.close()
-                            return@execute
+                    candidateRuntime = establishedRuntime
+                    val acceptedRuntime = synchronized(lifecycleLock) {
+                        if (!isCurrentConnection(ownGeneration) || connectingSession !== session) {
+                            false
+                        } else {
+                            runtime = establishedRuntime
+                            connectingSession = null
+                            connecting = false
+                            true
                         }
-                        runtime = establishedRuntime
-                        connectingSession = null
-                        connecting = false
+                    }
+                    if (!acceptedRuntime) {
+                        collectCleanupFailures(establishedRuntime::close)?.let {
+                            AuroraLog.debug("cancelled tunnel cleanup", it)
+                        }
+                        return@execute
                     }
                     establishedRuntime.start()
-                } catch (_: Exception) {
-                    device?.close()
-                    session.close()
-                    synchronized(lifecycleLock) {
-                        if (connectingSession === session) {
-                            connectingSession = null
+                } catch (error: Throwable) {
+                    if (candidateRuntime == null) {
+                        collectCleanupFailures(
+                            { device?.close() },
+                            session::close,
+                        )?.let { cleanupFailure ->
+                            if (cleanupFailure !== error) {
+                                error.addSuppressed(cleanupFailure)
+                            }
                         }
-                        connecting = false
                     }
-                    stopTunnel(stopService = true)
+                    AuroraLog.debug("tunnel establishment", error)
+                    stopTunnel(
+                        stopService = true,
+                        expectedGeneration = ownGeneration,
+                    )
                 }
             }
-        } catch (_: RejectedExecutionException) {
-            stopTunnel(stopService = true)
+        } catch (error: RuntimeException) {
+            AuroraLog.debug("tunnel startup", error)
+            stopTunnel(
+                stopService = true,
+                expectedGeneration = ownGeneration,
+            )
         }
     }
 
@@ -125,20 +163,61 @@ class AuroraVpnService : VpnService() {
         return FileDescriptorTunnelDevice(descriptor)
     }
 
-    private fun stopTunnel(stopService: Boolean) {
-        val resources = synchronized(lifecycleLock) {
+    private fun stopTunnel(
+        stopService: Boolean,
+        expectedGeneration: Long? = null,
+        serviceStartId: Int? = null,
+    ) {
+        val teardown = synchronized(lifecycleLock) {
+            if (expectedGeneration != null && connectionGeneration != expectedGeneration) {
+                return
+            }
+            val teardownGeneration = ++connectionGeneration
+            val teardownStartId = serviceStartId ?: connectionStartId.takeIf { it > 0 }
             connecting = false
-            val value = runtime to connectingSession
+            val resources = runtime to connectingSession
             runtime = null
             connectingSession = null
-            value
+            connectionStartId = 0
+            Triple(teardownGeneration, resources, teardownStartId)
         }
-        resources.first?.close()
-        resources.second?.close()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        if (stopService) {
-            stopSelf()
+        val (teardownGeneration, resources, teardownStartId) = teardown
+        val (runtimeToClose, sessionToClose) = resources
+        val resourceFailure = collectCleanupFailures(
+            { runtimeToClose?.close() },
+            { sessionToClose?.close() },
+        )
+        val lifecycleFailure = synchronized(lifecycleLock) {
+            // A newer CONNECT owns both the foreground notification and service start.
+            if (connectionGeneration != teardownGeneration) {
+                null
+            } else {
+                collectCleanupFailures(
+                    { stopForeground(STOP_FOREGROUND_REMOVE) },
+                    {
+                        if (stopService) {
+                            if (teardownStartId == null) {
+                                stopSelf()
+                            } else {
+                                stopSelfResult(teardownStartId)
+                            }
+                        }
+                    },
+                )
+            }
         }
+        val failure = when {
+            resourceFailure == null -> lifecycleFailure
+            lifecycleFailure == null || resourceFailure === lifecycleFailure -> resourceFailure
+            else -> resourceFailure.apply {
+                addSuppressed(lifecycleFailure)
+            }
+        }
+        failure?.let { AuroraLog.debug("tunnel cleanup", it) }
+    }
+
+    private fun isCurrentConnection(generation: Long): Boolean {
+        return connecting && connectionGeneration == generation
     }
 
     private fun enterForeground() {
@@ -172,8 +251,8 @@ class AuroraVpnService : VpnService() {
             context.startService(Intent(context, AuroraVpnService::class.java).setAction(actionDisconnect))
         }
 
-        const val actionConnect = "org.aurora.protocol.android.action.CONNECT"
-        const val actionDisconnect = "org.aurora.protocol.android.action.DISCONNECT"
+        const val actionConnect = connectVpnAction
+        const val actionDisconnect = disconnectVpnAction
         const val notificationChannel = "aurora-vpn"
         const val notificationId = 101
         const val tunnelMtu = 1280

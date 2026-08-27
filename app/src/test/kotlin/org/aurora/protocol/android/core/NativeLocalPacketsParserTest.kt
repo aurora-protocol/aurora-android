@@ -4,6 +4,7 @@ import java.util.Base64
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeLocalPacketsParserTest {
@@ -26,16 +27,55 @@ class NativeLocalPacketsParserTest {
     }
 
     @Test
-    fun rejectsEmptyAndOversizedPacketLists() {
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeLocalPacketsParser.decode("{\"packets_base64\":[]}".toByteArray())
-        }
+    fun acceptsCanonicalEmptyPacketLists() {
+        assertTrue(NativeLocalPacketsParser.decode("{\"packets_base64\":[]}".toByteArray()).isEmpty())
+    }
+
+    @Test
+    fun rejectsEmptyPacketsAndOversizedPacketLists() {
         assertThrows(IllegalArgumentException::class.java) {
             NativeLocalPacketsParser.decode("{\"packets_base64\":[\"\"]}".toByteArray())
         }
         val entries = List(65) { "AQ==" }.joinToString(separator = "\",\"")
         assertThrows(IllegalArgumentException::class.java) {
             NativeLocalPacketsParser.decode("{\"packets_base64\":[\"$entries\"]}".toByteArray())
+        }
+    }
+
+    @Test
+    fun rejectsMalformedUtf8AndNonCanonicalBase64() {
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeLocalPacketsParser.decode(
+                byteArrayOf(
+                    0x7b,
+                    0x22,
+                    0x70,
+                    0x61,
+                    0x63,
+                    0x6b,
+                    0x65,
+                    0x74,
+                    0x73,
+                    0x5f,
+                    0x62,
+                    0x61,
+                    0x73,
+                    0x65,
+                    0x36,
+                    0x34,
+                    0x22,
+                    0x3a,
+                    0xc3.toByte(),
+                    0x28,
+                    0x7d,
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeLocalPacketsParser.decode("{\"packets_base64\":[\"QQ\"]}".toByteArray())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeLocalPacketsParser.decode("{\"packets_base64\":[\"QR==\"]}".toByteArray())
         }
     }
 }

@@ -1,4 +1,2 @@
 -keep class org.aurora.protocol.android.core.NativeCoreJni { *; }
 -keep class org.aurora.protocol.android.AuroraApplication { *; }
--keep class org.aurora.protocol.android.core.AuroraReservationRepository { *; }
--keep class org.aurora.protocol.android.core.AndroidKeystoreReservationStore { *; }

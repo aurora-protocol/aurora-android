@@ -1,15 +1,19 @@
 package org.aurora.protocol.android.core
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProvisioningImportTest {
     @Test
     fun decodesBoundedCanonicalBase64Requests() {
-        val request = ProvisioningImport.decode("AQID")
+        val encoded = "AQID".toCharArray()
+        val request = ProvisioningImport.decode(encoded)
         try {
             assertArrayEquals(byteArrayOf(0x01, 0x02, 0x03), request)
+            assertArrayEquals(CharArray(4), encoded)
         } finally {
             request.fill(0)
         }
@@ -17,8 +21,24 @@ class ProvisioningImportTest {
 
     @Test
     fun rejectsEmptyAndNonCanonicalRequests() {
-        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("") }
-        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQI") }
-        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQID\n") }
+        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode(CharArray(0)) }
+        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQI".toCharArray()) }
+        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQID\n".toCharArray()) }
+    }
+
+    @Test
+    fun clearsRejectedProvisioningCharacters() {
+        val encoded = "AQI".toCharArray()
+
+        assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode(encoded) }
+
+        assertArrayEquals(CharArray(3), encoded)
+    }
+
+    @Test
+    fun exposesTheAllocationGuardUsedByThePastePath() {
+        assertFalse(ProvisioningImport.hasValidEncodedLength(0))
+        assertTrue(ProvisioningImport.hasValidEncodedLength(ProvisioningImport.maximumEncodedCharacters))
+        assertFalse(ProvisioningImport.hasValidEncodedLength(ProvisioningImport.maximumEncodedCharacters + 1))
     }
 }

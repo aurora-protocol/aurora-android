@@ -51,6 +51,44 @@ class NativeSessionControllerTest {
     }
 
     @Test
+    fun preservesTheEstablishmentFailureWhenCoreHandleCleanupAlsoFails() {
+        val cleanupFailure = IllegalStateException("core close failed")
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            closeFailure = cleanupFailure,
+        )
+        val issuer = FailingIssuerExchange()
+        val controller = NativeSessionController(core, issuer)
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.establish(byteArrayOf(0x10))
+        }
+
+        assertEquals("issuer unavailable", error.message)
+        assertEquals(listOf(cleanupFailure), error.suppressed.toList())
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
+    fun preservesTheEstablishmentFailureWhenCoreRejectsHandleCleanup() {
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            closeResult = false,
+        )
+        val controller = NativeSessionController(core, FailingIssuerExchange())
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.establish(byteArrayOf(0x10))
+        }
+
+        assertEquals("issuer unavailable", error.message)
+        assertEquals(listOf("Core native session close rejected"), error.suppressed.map { it.message })
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
     fun returnsImmediateAndDeferredLocalPacketsWithoutLeakingIngressInput() {
         val immediate = byteArrayOf(0x45, 0x00, 0x00, 0x14)
         val deferred = byteArrayOf(0x60, 0x00, 0x00, 0x00)
@@ -77,6 +115,22 @@ class NativeSessionControllerTest {
             nextPacket.fill(0)
             controller.close()
         }
+    }
+
+    @Test
+    fun clearsRejectedIngressPacketsWhenTheSessionIsUnavailable() {
+        val controller = NativeSessionController(
+            FakeCore(issuerWorkPayload(byteArrayOf(0x30))),
+            RecordingIssuerExchange(byteArrayOf(0x50)),
+        )
+        val packet = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+
+        assertThrows(IllegalStateException::class.java) {
+            controller.ingressLocalPacket(packet)
+        }
+
+        assertArrayEquals(ByteArray(packet.size), packet)
+        controller.close()
     }
 
     @Test
@@ -166,12 +220,52 @@ class NativeSessionControllerTest {
         assertFalse(controller.isEstablished)
     }
 
+    @Test
+    fun closesTheCoreHandleWhenIssuerCancellationFailsAndRemainsIdempotent() {
+        val core = FakeCore(issuerWorkPayload(byteArrayOf(0x30)))
+        val issuer = ThrowingCancellationIssuerExchange(byteArrayOf(0x50))
+        val controller = NativeSessionController(core, issuer)
+        controller.establish(byteArrayOf(0x10))
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.close()
+        }
+
+        assertEquals("issuer cancellation failed", error.message)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+        controller.close()
+        assertEquals(listOf(7L), core.closedHandles)
+    }
+
+    @Test
+    fun reportsARejectedExplicitCoreCloseAndRemainsIdempotent() {
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            closeResult = false,
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        controller.establish(byteArrayOf(0x10))
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.close()
+        }
+
+        assertEquals("Core native session close rejected", error.message)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+        controller.close()
+        assertEquals(listOf(7L), core.closedHandles)
+    }
+
     private class FakeCore(
         private val beginPayload: ByteArray,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),
         private val nextPacket: ByteArray = byteArrayOf(0x60),
         private val beginStarted: CountDownLatch? = null,
         private val allowBeginToReturn: CountDownLatch? = null,
+        private val closeFailure: RuntimeException? = null,
+        private val closeResult: Boolean = true,
     ) : NativeSessionCore {
         val closedHandles = mutableListOf<Long>()
         var completed = false
@@ -199,7 +293,8 @@ class NativeSessionControllerTest {
 
         override fun closeNativeSession(handle: Long): Boolean {
             closedHandles += handle
-            return true
+            closeFailure?.let { throw it }
+            return closeResult
         }
     }
 
@@ -237,6 +332,16 @@ class NativeSessionControllerTest {
 
         override fun cancel() {
             cancelled = true
+        }
+    }
+
+    private class ThrowingCancellationIssuerExchange(
+        private val response: ByteArray,
+    ) : CancellableIssuerExchange {
+        override fun exchange(work: NativeIssuerWork): ByteArray = response
+
+        override fun cancel() {
+            throw IllegalStateException("issuer cancellation failed")
         }
     }
 

@@ -30,7 +30,7 @@ internal class NativeTunnelRuntime(
             workers.execute(::runIngress)
             workers.execute(::runEgress)
         } catch (error: RejectedExecutionException) {
-            if (transitionToClosed()) {
+            if (transitionToClosedPreserving(error)) {
                 throw error
             }
         }
@@ -84,7 +84,7 @@ internal class NativeTunnelRuntime(
     }
 
     private fun fail(error: Throwable) {
-        if (transitionToClosed()) {
+        if (transitionToClosedPreserving(error)) {
             onTerminalFailure(error)
         }
     }
@@ -100,15 +100,44 @@ internal class NativeTunnelRuntime(
     }
 
     private fun closeResources() {
+        var failure: Throwable? = null
         try {
             session.close()
-        } finally {
-            try {
-                device.close()
-            } finally {
-                workers.shutdownNow()
-            }
+        } catch (error: Throwable) {
+            failure = error
         }
+        try {
+            device.close()
+        } catch (error: Throwable) {
+            failure = combineFailures(failure, error)
+        }
+        try {
+            workers.shutdownNow()
+        } catch (error: Throwable) {
+            failure = combineFailures(failure, error)
+        }
+        failure?.let { throw it }
+    }
+
+    private fun transitionToClosedPreserving(primaryFailure: Throwable): Boolean {
+        return try {
+            transitionToClosed()
+        } catch (closeFailure: Throwable) {
+            if (closeFailure !== primaryFailure) {
+                primaryFailure.addSuppressed(closeFailure)
+            }
+            true
+        }
+    }
+
+    private fun combineFailures(first: Throwable?, next: Throwable): Throwable {
+        if (first == null) {
+            return next
+        }
+        if (first !== next) {
+            first.addSuppressed(next)
+        }
+        return first
     }
 
     private companion object {

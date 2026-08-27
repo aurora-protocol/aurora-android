@@ -33,6 +33,7 @@ internal class NativeSessionController(
         var work: NativeIssuerWork? = null
         var issuerResponse: ByteArray? = null
         var established = false
+        var primaryFailure: Throwable? = null
         try {
             work = try {
                 core.beginNativeSession(provisioning).use { response ->
@@ -51,7 +52,7 @@ internal class NativeSessionController(
                 }
             }
             if (closeReturnedHandle) {
-                core.closeNativeSession(work.handle)
+                closeNativeSessionChecked(work.handle)
                 throw IllegalStateException("native session was cancelled")
             }
             issuerResponse = issuer.exchange(work)
@@ -70,9 +71,17 @@ internal class NativeSessionController(
             }
             check(established) { "native session was cancelled" }
             return work.handle
+        } catch (error: Throwable) {
+            primaryFailure = error
+            throw error
         } finally {
             issuerResponse?.fill(0)
-            work?.close()
+            var cleanupFailure: Throwable? = null
+            try {
+                work?.close()
+            } catch (error: Throwable) {
+                cleanupFailure = error
+            }
             if (!established) {
                 val handle = work?.handle ?: 0L
                 val shouldClose = synchronized(lock) {
@@ -87,15 +96,26 @@ internal class NativeSessionController(
                     }
                 }
                 if (shouldClose && handle != 0L) {
-                    core.closeNativeSession(handle)
+                    try {
+                        closeNativeSessionChecked(handle)
+                    } catch (error: Throwable) {
+                        cleanupFailure = combineFailures(cleanupFailure, error)
+                    }
                 }
+            }
+            cleanupFailure?.let { cleanup ->
+                val primary = primaryFailure
+                if (primary == null) {
+                    throw cleanup
+                }
+                combineFailures(primary, cleanup)
             }
         }
     }
 
     override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> {
-        val handle = establishedHandle()
         try {
+            val handle = establishedHandle()
             core.ingressLocalPacket(handle, packet).use { response ->
                 check(response.status == CoreStatus.OK) { "Core local packet ingress rejected" }
                 return NativeLocalPacketsParser.decode(response.payload)
@@ -108,8 +128,10 @@ internal class NativeSessionController(
     override fun nextLocalPacket(): ByteArray = core.nextLocalPacket(establishedHandle())
 
     override fun close() {
-        (issuer as? CancellableIssuerExchange)?.cancel()
         val handle = synchronized(lock) {
+            if (closed) {
+                return
+            }
             ++generation
             closed = true
             starting = false
@@ -118,9 +140,25 @@ internal class NativeSessionController(
             pendingHandle = 0L
             current
         }
-        if (handle != 0L) {
-            core.closeNativeSession(handle)
+
+        var failure: Throwable? = null
+        try {
+            (issuer as? CancellableIssuerExchange)?.cancel()
+        } catch (error: Throwable) {
+            failure = error
         }
+        if (handle != 0L) {
+            try {
+                closeNativeSessionChecked(handle)
+            } catch (error: Throwable) {
+                failure = combineFailures(failure, error)
+            }
+        }
+        failure?.let { throw it }
+    }
+
+    private fun closeNativeSessionChecked(handle: Long) {
+        check(core.closeNativeSession(handle)) { "Core native session close rejected" }
     }
 
     private fun establishedHandle(): Long = synchronized(lock) {
@@ -130,5 +168,15 @@ internal class NativeSessionController(
 
     private companion object {
         const val maximumIssuerResponseBytes = 1024 * 1024
+
+        fun combineFailures(first: Throwable?, next: Throwable): Throwable {
+            if (first == null) {
+                return next
+            }
+            if (first !== next) {
+                first.addSuppressed(next)
+            }
+            return first
+        }
     }
 }

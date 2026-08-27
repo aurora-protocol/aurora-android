@@ -4,8 +4,12 @@ import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -71,6 +75,49 @@ class NativeTunnelRuntimeTest {
             runtime.close()
             workers.shutdownNow()
         }
+    }
+
+    @Test
+    fun reportsTheWorkerFailureWhenResourceCleanupAlsoFails() {
+        val workerFailure = IOException("tunnel read failed")
+        val cleanupFailure = IOException("tunnel device close failed")
+        val terminalFailure = LinkedBlockingQueue<Throwable>()
+        val workers = Executors.newFixedThreadPool(2)
+        val session = FakeNativePacketSession()
+        val device = FailingReadAndCloseTunnelPacketDevice(workerFailure, cleanupFailure)
+        val runtime = NativeTunnelRuntime(session, device, workers) { terminalFailure.offer(it) }
+
+        runtime.start()
+
+        val reported = terminalFailure.poll(2, TimeUnit.SECONDS)
+        assertSame(workerFailure, reported)
+        assertEquals(listOf(cleanupFailure), reported?.suppressed?.toList())
+        assertTrue(session.closed)
+        assertTrue(device.closeAttempted)
+        assertTrue(workers.isShutdown)
+        runtime.close()
+    }
+
+    @Test
+    fun preservesExecutorRejectionWhenResourceCleanupAlsoFails() {
+        val cleanupFailure = IOException("tunnel device close failed")
+        val workers = Executors.newSingleThreadExecutor().apply { shutdown() }
+        val session = FakeNativePacketSession()
+        val device = FailingReadAndCloseTunnelPacketDevice(
+            readFailure = AssertionError("worker must not run"),
+            closeFailure = cleanupFailure,
+        )
+        val runtime = NativeTunnelRuntime(session, device, workers) { throw AssertionError("unexpected terminal failure", it) }
+
+        val error = assertThrows(RejectedExecutionException::class.java) {
+            runtime.start()
+        }
+
+        assertEquals(listOf(cleanupFailure), error.suppressed.toList())
+        assertTrue(session.closed)
+        assertTrue(device.closeAttempted)
+        assertTrue(workers.isShutdown)
+        runtime.close()
     }
 
     private class FakeNativePacketSession : NativePacketSession {
@@ -145,6 +192,22 @@ class NativeTunnelRuntimeTest {
 
         override fun close() {
             inbound.offer(byteArrayOf(0x45))
+        }
+    }
+
+    private class FailingReadAndCloseTunnelPacketDevice(
+        private val readFailure: Throwable,
+        private val closeFailure: Throwable,
+    ) : TunnelPacketDevice {
+        var closeAttempted = false
+
+        override fun readPacket(): ByteArray? = throw readFailure
+
+        override fun writePacket(packet: ByteArray) = Unit
+
+        override fun close() {
+            closeAttempted = true
+            throw closeFailure
         }
     }
 }

@@ -1,87 +1,109 @@
 package org.aurora.protocol.android.core
 
-import java.nio.ByteBuffer
-import java.nio.charset.CharacterCodingException
-import java.nio.charset.CodingErrorAction
-import java.util.Base64
-import org.json.JSONArray
-import org.json.JSONException
-import org.json.JSONObject
-
+/** Decodes Core's private binary local-packet-list ABI. */
 internal object NativeLocalPacketsParser {
-    fun decode(encoded: ByteArray): List<ByteArray> {
-        require(encoded.isNotEmpty() && encoded.size <= maximumResultBytes) { "invalid local packet result size" }
+    /** Takes ownership of [encoded] and clears it before returning or throwing. */
+    fun decode(encoded: ByteArray): List<ByteArray> = decode(encoded, null)
+
+    /** Test seam for observing packet buffers that must be cleared after a later failure. */
+    internal fun decode(
+        encoded: ByteArray,
+        decodedPacketObserver: ((ByteArray) -> Unit)?,
+    ): List<ByteArray> {
         val packets = ArrayList<ByteArray>()
         try {
-            val value = JSONObject(decodeUtf8(encoded))
-            require(value.length() == 1 && value.has("packets_base64")) { "invalid local packet result fields" }
-            val entries = value.get("packets_base64") as? JSONArray
-                ?: throw IllegalArgumentException("invalid local packet result type")
-            // Core's canonical result is an empty array when ingress produced no
-            // immediate local packet (for example, forwarded DNS or a partial
-            // fragment). Empty is success, not a terminal tunnel condition.
-            require(entries.length() in 0..maximumPacketCount) { "invalid local packet result count" }
-            packets.ensureCapacity(entries.length())
-            for (index in 0 until entries.length()) {
-                val text = entries.get(index) as? String
-                    ?: throw IllegalArgumentException("invalid local packet encoding")
-                val packet = decodeBase64(text)
-                if (packet.isEmpty() || packet.size > maximumPacketBytes) {
-                    packet.fill(0)
-                    throw IllegalArgumentException("invalid local packet size")
-                }
-                packets += packet
+            require(encoded.isNotEmpty() && encoded.size <= maximumResultBytes) {
+                "invalid local packet result size"
             }
-            return packets
-        } catch (error: JSONException) {
-            // Caught separately from RuntimeException: org.json.JSONException is a
-            // RuntimeException in the test artifact but a checked Exception on device.
-            packets.forEach { it.fill(0) }
-            throw IllegalArgumentException("invalid Core local packet result", error)
-        } catch (error: RuntimeException) {
-            packets.forEach { it.fill(0) }
-            throw IllegalArgumentException("invalid Core local packet result", error)
-        }
-    }
+            val reader = PacketListReader(encoded)
+            val count = reader.readCanonicalVarint()
+            require(count <= maximumPacketCount.toLong()) { "invalid local packet result count" }
+            packets.ensureCapacity(count.toInt())
 
-    private fun decodeBase64(value: String): ByteArray {
-        require(value.isNotEmpty() && value.length <= maximumPacketBase64Characters) {
-            "invalid local packet encoding"
-        }
-        val decoded = try {
-            Base64.getDecoder().decode(value)
-        } catch (error: IllegalArgumentException) {
-            throw IllegalArgumentException("invalid local packet encoding", error)
-        }
-        var canonical: ByteArray? = null
-        try {
-            canonical = Base64.getEncoder().encode(decoded)
-            require(canonical.size == value.length && canonical.indices.all { index ->
-                canonical[index].toInt() and 0xff == value[index].code
-            }) {
-                "non-canonical local packet encoding"
+            var aggregatePacketBytes = 0
+            repeat(count.toInt()) {
+                val packetLength = reader.readOpaque24Length()
+                require(packetLength in 1..maximumPacketBytes) { "invalid local packet size" }
+                require(aggregatePacketBytes <= maximumResultBytes - packetLength) {
+                    "local packet result exceeds size limit"
+                }
+                aggregatePacketBytes += packetLength
+
+                val packet = reader.readPacket(packetLength)
+                var retained = false
+                try {
+                    packets += packet
+                    retained = true
+                    decodedPacketObserver?.invoke(packet)
+                } finally {
+                    if (!retained) {
+                        packet.fill(0)
+                    }
+                }
             }
-            return decoded
-        } catch (error: RuntimeException) {
-            decoded.fill(0)
+            require(reader.isExhausted()) { "local packet result has trailing bytes" }
+            return packets
+        } catch (error: Throwable) {
+            packets.forEach { it.fill(0) }
+            packets.clear()
             throw error
         } finally {
-            canonical?.fill(0)
+            encoded.fill(0)
         }
     }
 
-    private fun decodeUtf8(encoded: ByteArray): String = try {
-        Charsets.UTF_8.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-            .decode(ByteBuffer.wrap(encoded))
-            .toString()
-    } catch (error: CharacterCodingException) {
-        throw IllegalArgumentException("invalid local packet result encoding", error)
+    private class PacketListReader(private val encoded: ByteArray) {
+        private var offset = 0
+
+        fun readCanonicalVarint(): Long {
+            requireRemaining(1, "local packet result count is truncated")
+            val first = encoded[offset].toInt() and 0xff
+            val encodedBytes = 1 shl (first ushr 6)
+            requireRemaining(encodedBytes, "local packet result count is truncated")
+
+            var value = (first and 0x3f).toLong()
+            repeat(encodedBytes - 1) { index ->
+                value = (value shl Byte.SIZE_BITS) or
+                    (encoded[offset + index + 1].toInt() and 0xff).toLong()
+            }
+            val minimumValue = when (encodedBytes) {
+                1 -> 0L
+                2 -> 64L
+                4 -> 16_384L
+                8 -> 1_073_741_824L
+                else -> error("unreachable QUIC varint length")
+            }
+            require(value >= minimumValue) { "local packet result count is not canonical" }
+            offset += encodedBytes
+            return value
+        }
+
+        fun readOpaque24Length(): Int {
+            requireRemaining(opaque24LengthBytes, "local packet length is truncated")
+            val length = ((encoded[offset].toInt() and 0xff) shl 16) or
+                ((encoded[offset + 1].toInt() and 0xff) shl 8) or
+                (encoded[offset + 2].toInt() and 0xff)
+            offset += opaque24LengthBytes
+            return length
+        }
+
+        fun readPacket(length: Int): ByteArray {
+            requireRemaining(length, "local packet is truncated")
+            val packet = ByteArray(length)
+            System.arraycopy(encoded, offset, packet, 0, length)
+            offset += length
+            return packet
+        }
+
+        fun isExhausted(): Boolean = offset == encoded.size
+
+        private fun requireRemaining(length: Int, message: String) {
+            require(length >= 0 && offset <= encoded.size - length) { message }
+        }
     }
 
-    private const val maximumPacketBytes = 65535
-    private const val maximumPacketBase64Characters = ((maximumPacketBytes + 2) / 3) * 4
+    private const val opaque24LengthBytes = 3
+    private const val maximumPacketBytes = 65_535
     private const val maximumPacketCount = 64
-    private const val maximumResultBytes = 2 * 1024 * 1024
+    private const val maximumResultBytes = 1024 * 1024
 }

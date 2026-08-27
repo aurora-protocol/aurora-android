@@ -17,9 +17,9 @@ class CoreOperationTest {
     @Test
     fun exposesOnlyTheNativeSessionOperationsRequiredForVpnPacketIo() {
         assertEquals(10, CoreOperation.CLOSE_NATIVE_SESSION.wireValue)
+        assertEquals(14, CoreOperation.INGRESS_LOCAL_PACKET.wireValue)
         assertEquals(15, CoreOperation.NEXT_LOCAL_PACKET.wireValue)
         assertEquals(16, CoreOperation.BEGIN_NATIVE_SESSION_JSON.wireValue)
         assertEquals(17, CoreOperation.COMPLETE_NATIVE_SESSION_RAW.wireValue)
-        assertEquals(18, CoreOperation.INGRESS_LOCAL_PACKET_JSON.wireValue)
     }
 }

@@ -107,6 +107,10 @@ class NativeSessionControllerTest {
         try {
             assertArrayEquals(ByteArray(ingress.size), ingress)
             assertArrayEquals(byteArrayOf(0x45, 0x00, 0x00, 0x14), core.ingressPacket)
+            assertArrayEquals(
+                ByteArray(core.ingressResponsePayloadReference.size),
+                core.ingressResponsePayloadReference,
+            )
             assertEquals(1, immediatePackets.size)
             assertArrayEquals(immediate, immediatePackets.single())
             assertArrayEquals(deferred, nextPacket)
@@ -130,6 +134,29 @@ class NativeSessionControllerTest {
         }
 
         assertArrayEquals(ByteArray(packet.size), packet)
+        controller.close()
+    }
+
+    @Test
+    fun clearsMalformedCoreIngressResultsAndCallerPackets() {
+        val malformedResult = byteArrayOf(0x01, 0x00, 0x00, 0x02, 0x45)
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            ingressPayload = malformedResult,
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        controller.establish(byteArrayOf(0x10))
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            controller.ingressLocalPacket(ingress)
+        }
+
+        assertArrayEquals(ByteArray(ingress.size), ingress)
+        assertArrayEquals(
+            ByteArray(core.ingressResponsePayloadReference.size),
+            core.ingressResponsePayloadReference,
+        )
         controller.close()
     }
 
@@ -271,6 +298,7 @@ class NativeSessionControllerTest {
         var completed = false
         lateinit var issuerResponse: ByteArray
         lateinit var ingressPacket: ByteArray
+        lateinit var ingressResponsePayloadReference: ByteArray
 
         override fun beginNativeSession(provisioning: ByteArray): CoreResponse {
             beginStarted?.countDown()
@@ -286,7 +314,9 @@ class NativeSessionControllerTest {
 
         override fun ingressLocalPacket(handle: Long, packet: ByteArray): CoreResponse {
             ingressPacket = packet.copyOf()
-            return CoreResponse(CoreStatus.OK, ingressPayload.copyOf())
+            val responsePayload = ingressPayload.copyOf()
+            ingressResponsePayloadReference = responsePayload
+            return CoreResponse(CoreStatus.OK, responsePayload)
         }
 
         override fun nextLocalPacket(handle: Long): ByteArray = nextPacket.copyOf()
@@ -355,8 +385,15 @@ class NativeSessionControllerTest {
             }
         """.trimIndent().toByteArray()
 
-        fun localPacketsPayload(packet: ByteArray): ByteArray = """
-            {"packets_base64":["${Base64.getEncoder().encodeToString(packet)}"]}
-        """.trimIndent().toByteArray()
+        fun localPacketsPayload(packet: ByteArray): ByteArray {
+            require(packet.isNotEmpty() && packet.size <= 65_535)
+            return ByteArray(1 + 3 + packet.size).also { encoded ->
+                encoded[0] = 0x01
+                encoded[1] = (packet.size ushr 16).toByte()
+                encoded[2] = (packet.size ushr 8).toByte()
+                encoded[3] = packet.size.toByte()
+                System.arraycopy(packet, 0, encoded, 4, packet.size)
+            }
+        }
     }
 }

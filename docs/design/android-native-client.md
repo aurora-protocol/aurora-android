@@ -115,6 +115,17 @@ does not cache Java arrays; and zeroizes each temporary C buffer before it is
 released. ABI operation identifiers live in one Kotlin internal definition and
 are covered by bridge tests.
 
+The per-packet ingress path uses Core's binary operation 14 directly. Its
+private mobile-FFI result is a canonical QUIC varint packet count followed by
+three-byte big-endian lengths and opaque packet bodies. The JNI bridge admits
+at most the one-byte Core status plus Core's one-megabyte result bound. Kotlin
+accepts at most 64 non-empty packets of at most 65,535 bytes, rejects
+non-minimal counts, truncation, and trailing data, and clears the owned result
+envelope on every completion path. Successfully decoded packet copies transfer
+to the tunnel runtime, which clears them after writing; partially decoded
+copies are cleared before a malformed result is rejected. Packet traffic is
+never expanded into JSON, base64, or immutable strings on this hot path.
+
 Provisioning reservation metadata is emitted by a Core JSON operation. Kotlin
 validates JSON framing and field sizes but does not parse the provisioning
 source or any Aurora network message. It does parse Core's private mobile-FFI
@@ -144,7 +155,8 @@ allowing a second request to overlap a connection whose teardown is uncertain.
 
 - JVM tests cover byte clearing, trust-loader validation, encrypted store
   round-trips, issuer request validation, redirect rejection, response bounds,
-  tunnel worker shutdown, and JNI result framing.
+  tunnel worker shutdown, canonical binary packet-list framing, packet-result
+  ownership, and the JNI bridge's operation and size contract.
 - Native build checks produce ELF libraries for both supported ABIs and verify
   the embedded clean-Core revision and Go/toolchain build settings, exact
   reviewed Core/JNI interface, dependency linkage, and 16 KiB LOAD-segment

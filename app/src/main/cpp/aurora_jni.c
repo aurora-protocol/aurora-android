@@ -5,10 +5,10 @@
 #include "libauroracore.h"
 
 #define AURORA_CLOSE_NATIVE_SESSION_OPERATION 10
+#define AURORA_INGRESS_LOCAL_PACKET_OPERATION 14
 #define AURORA_NEXT_LOCAL_PACKET_OPERATION 15
 #define AURORA_BEGIN_NATIVE_SESSION_JSON_OPERATION 16
 #define AURORA_COMPLETE_NATIVE_SESSION_RAW_OPERATION 17
-#define AURORA_INGRESS_LOCAL_PACKET_JSON_OPERATION 18
 #define AURORA_CONFIGURE_TRUST_OPERATION 21
 #define AURORA_RESERVATION_JSON_OPERATION 22
 #define AURORA_MAX_TRUST_BYTES (64 * 1024)
@@ -18,7 +18,7 @@
 #define AURORA_MAX_ISSUER_WORK_OUTPUT_BYTES (32 * 1024)
 #define AURORA_MAX_ISSUER_RESPONSE_BYTES (1024 * 1024)
 #define AURORA_MAX_LOCAL_PACKET_BYTES 65535
-#define AURORA_MAX_LOCAL_PACKET_RESULT_BYTES (2 * 1024 * 1024)
+#define AURORA_MAX_LOCAL_PACKET_RESULT_BYTES (1024 * 1024)
 
 static void aurora_secure_zero(void *value, size_t length) {
     volatile uint8_t *cursor = (volatile uint8_t *)value;
@@ -38,10 +38,10 @@ Java_org_aurora_protocol_android_core_NativeCoreJni_nativeCall(
 ) {
     (void)receiver;
     if (operation != AURORA_CLOSE_NATIVE_SESSION_OPERATION &&
+        operation != AURORA_INGRESS_LOCAL_PACKET_OPERATION &&
         operation != AURORA_NEXT_LOCAL_PACKET_OPERATION &&
         operation != AURORA_BEGIN_NATIVE_SESSION_JSON_OPERATION &&
         operation != AURORA_COMPLETE_NATIVE_SESSION_RAW_OPERATION &&
-        operation != AURORA_INGRESS_LOCAL_PACKET_JSON_OPERATION &&
         operation != AURORA_CONFIGURE_TRUST_OPERATION &&
         operation != AURORA_RESERVATION_JSON_OPERATION) {
         return NULL;
@@ -49,9 +49,9 @@ Java_org_aurora_protocol_android_core_NativeCoreJni_nativeCall(
     if (argument < 0 ||
         ((operation == AURORA_BEGIN_NATIVE_SESSION_JSON_OPERATION || operation == AURORA_CONFIGURE_TRUST_OPERATION) && argument != 0) ||
         ((operation == AURORA_CLOSE_NATIVE_SESSION_OPERATION ||
+          operation == AURORA_INGRESS_LOCAL_PACKET_OPERATION ||
           operation == AURORA_NEXT_LOCAL_PACKET_OPERATION ||
           operation == AURORA_COMPLETE_NATIVE_SESSION_RAW_OPERATION ||
-          operation == AURORA_INGRESS_LOCAL_PACKET_JSON_OPERATION ||
           operation == AURORA_RESERVATION_JSON_OPERATION) && argument == 0)) {
         return NULL;
     }
@@ -75,7 +75,7 @@ Java_org_aurora_protocol_android_core_NativeCoreJni_nativeCall(
             minimum_input_bytes = 1;
             maximum_input_bytes = AURORA_MAX_ISSUER_RESPONSE_BYTES;
             break;
-        case AURORA_INGRESS_LOCAL_PACKET_JSON_OPERATION:
+        case AURORA_INGRESS_LOCAL_PACKET_OPERATION:
             minimum_input_bytes = 1;
             maximum_input_bytes = AURORA_MAX_LOCAL_PACKET_BYTES;
             maximum_output_bytes = 1 + AURORA_MAX_LOCAL_PACKET_RESULT_BYTES;

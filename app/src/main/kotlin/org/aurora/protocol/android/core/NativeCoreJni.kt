@@ -44,7 +44,7 @@ internal object NativeCoreJni : NativeSessionCore {
     override fun ingressLocalPacket(handle: Long, packet: ByteArray): CoreResponse {
         require(handle > 0) { "invalid native session handle" }
         require(packet.isNotEmpty() && packet.size <= maximumLocalPacketBytes) { "invalid local packet" }
-        val raw = nativeCall(CoreOperation.INGRESS_LOCAL_PACKET_JSON.wireValue, packet, handle)
+        val raw = nativeCall(CoreOperation.INGRESS_LOCAL_PACKET.wireValue, packet, handle)
             ?: throw IllegalStateException("Core local packet ingress failed")
         return NativeCoreResponse.decode(raw)
     }

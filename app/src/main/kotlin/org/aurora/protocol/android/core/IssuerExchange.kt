@@ -1,8 +1,12 @@
 package org.aurora.protocol.android.core
 
+import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 
 internal interface IssuerExchange {
@@ -28,15 +32,32 @@ internal fun interface IssuerHttpConnectionFactory {
     fun open(endpoint: URL): IssuerHttpConnection
 }
 
+internal fun interface IssuerDeadlineTask {
+    fun cancel()
+}
+
+internal fun interface IssuerDeadlineScheduler {
+    fun schedule(delayNanos: Long, action: () -> Unit): IssuerDeadlineTask
+}
+
+internal class IssuerExchangeTimeoutException : IOException("issuer exchange timed out")
+
 internal class HttpsIssuerExchange(
     private val connectionFactory: IssuerHttpConnectionFactory = IssuerHttpConnectionFactory { endpoint ->
         HttpsIssuerHttpConnection(endpoint)
     },
+    private val exchangeTimeoutNanos: Long = TimeUnit.SECONDS.toNanos(exchangeTimeoutSeconds),
+    private val monotonicNanos: () -> Long = System::nanoTime,
+    private val deadlineScheduler: IssuerDeadlineScheduler = SystemIssuerDeadlineScheduler,
 ) : CancellableIssuerExchange {
     private val exchangeLock = Any()
-    private var activeConnection: IssuerHttpConnection? = null
+    private var activeConnection: ActiveIssuerConnection? = null
     private var exchangeInProgress = false
     private var cancelled = false
+
+    init {
+        require(exchangeTimeoutNanos > 0) { "invalid issuer exchange timeout" }
+    }
 
     override fun exchange(work: NativeIssuerWork): ByteArray {
         require(work.handle > 0) { "invalid issuer handle" }
@@ -44,18 +65,23 @@ internal class HttpsIssuerExchange(
             "invalid issuer request body"
         }
         val endpoint = endpointFor(work)
+        val startedAtNanos = monotonicNanos()
         synchronized(exchangeLock) {
             check(!cancelled) { "issuer exchange was cancelled" }
             check(!exchangeInProgress) { "issuer exchange is already in progress" }
             exchangeInProgress = true
         }
 
-        var connection: IssuerHttpConnection? = null
+        var connection: ActiveIssuerConnection? = null
+        var deadlineTask: IssuerDeadlineTask? = null
         var responseBody: InputStream? = null
         var responseBytes: ByteArray? = null
         var primaryFailure: Throwable? = null
         try {
-            val openedConnection = connectionFactory.open(endpoint)
+            val openedConnection = ActiveIssuerConnection(
+                connectionFactory.open(endpoint),
+                ::releaseConnectionAfterAsynchronousClose,
+            )
             connection = openedConnection
             val accepted = synchronized(exchangeLock) {
                 if (cancelled) {
@@ -66,38 +92,53 @@ internal class HttpsIssuerExchange(
                 }
             }
             check(accepted) { "issuer exchange was cancelled" }
+            val remainingNanos = remainingNanos(startedAtNanos)
+            if (remainingNanos <= 0) {
+                synchronized(exchangeLock) {
+                    if (activeConnection === openedConnection) {
+                        openedConnection.timedOut = true
+                    }
+                }
+                throw IssuerExchangeTimeoutException()
+            }
+            deadlineTask = deadlineScheduler.schedule(remainingNanos) {
+                expire(openedConnection)
+            }
 
-            val response = openedConnection.post(work.requestBody)
+            val response = openedConnection.connection.post(work.requestBody)
             responseBody = response.body
+            ensureBeforeDeadline(startedAtNanos)
             require(response.statusCode == HttpsURLConnection.HTTP_OK) { "issuer rejected request" }
             require(isBinaryContentType(response.contentType)) { "issuer response content type is invalid" }
             require(response.contentLength in -1..maximumIssuerResponseBytes.toLong()) { "issuer response exceeds size limit" }
             val body = responseBody ?: throw IllegalStateException("issuer response body is unavailable")
-            val result = readBounded(body)
+            val result = readBounded(body, startedAtNanos)
             responseBytes = result
+            finishExchange(openedConnection, startedAtNanos, null)?.let { throw it }
             return result
         } catch (error: Throwable) {
-            primaryFailure = error
-            throw error
+            val failure = finishExchange(connection, startedAtNanos, error) ?: error
+            primaryFailure = failure
+            throw failure
         } finally {
             var failure = primaryFailure
+            try {
+                deadlineTask?.cancel()
+            } catch (error: Throwable) {
+                failure = combineFailures(failure, error)
+            }
             try {
                 responseBody?.close()
             } catch (error: Throwable) {
                 failure = combineFailures(failure, error)
             }
-            try {
-                connection?.close()
-            } catch (error: Throwable) {
+            connection?.closeOnce()?.let { error ->
                 failure = combineFailures(failure, error)
             }
-            synchronized(exchangeLock) {
-                if (activeConnection === connection) {
-                    activeConnection = null
-                }
-                exchangeInProgress = false
-            }
-            if (primaryFailure == null) {
+            releaseConnectionAfterCleanup(connection)
+            if (primaryFailure != null) {
+                responseBytes?.fill(0)
+            } else {
                 failure?.let { cleanupFailure ->
                     responseBytes?.fill(0)
                     throw cleanupFailure
@@ -111,7 +152,114 @@ internal class HttpsIssuerExchange(
             cancelled = true
             activeConnection
         }
-        connection?.close()
+        connection?.closeOnce()?.let { throw it }
+    }
+
+    private fun expire(connection: ActiveIssuerConnection) {
+        val shouldClose = synchronized(exchangeLock) {
+            if (activeConnection !== connection || !exchangeInProgress || cancelled || connection.finished) {
+                false
+            } else {
+                connection.timedOut = true
+                true
+            }
+        }
+        if (shouldClose) {
+            connection.closeOnce()
+        }
+    }
+
+    private fun releaseConnectionAfterCleanup(connection: ActiveIssuerConnection?) {
+        synchronized(exchangeLock) {
+            if (connection == null) {
+                exchangeInProgress = false
+                return
+            }
+            if (activeConnection !== connection) {
+                if (activeConnection == null) {
+                    exchangeInProgress = false
+                }
+                return
+            }
+            if (connection.closeCompleted) {
+                if (connection.closeFailed) {
+                    cancelled = true
+                }
+                activeConnection = null
+                exchangeInProgress = false
+            } else {
+                // A deadline task owns a close that already unblocked this call.
+                // Keep the exchange poisoned until that close actually returns.
+                connection.releaseWhenClosed = true
+                if (connection.closeCompleted) {
+                    if (connection.closeFailed) {
+                        cancelled = true
+                    }
+                    activeConnection = null
+                    exchangeInProgress = false
+                }
+            }
+        }
+    }
+
+    private fun releaseConnectionAfterAsynchronousClose(connection: ActiveIssuerConnection) {
+        synchronized(exchangeLock) {
+            if (activeConnection === connection && connection.releaseWhenClosed) {
+                if (connection.closeFailed) {
+                    cancelled = true
+                }
+                activeConnection = null
+                exchangeInProgress = false
+            }
+        }
+    }
+
+    private fun finishExchange(
+        connection: ActiveIssuerConnection?,
+        startedAtNanos: Long,
+        failure: Throwable?,
+    ): Throwable? {
+        val terminalState = synchronized(exchangeLock) {
+            val deadlineExpired = remainingNanos(startedAtNanos) <= 0
+            if (connection != null && activeConnection === connection) {
+                if (!connection.timedOut && deadlineExpired) {
+                    connection.timedOut = true
+                }
+                // Keep ownership until final teardown so neither sequential reuse
+                // nor cancel() can target a newer connection while this one closes.
+                connection.finished = true
+            }
+            Pair(connection?.timedOut == true || (connection == null && deadlineExpired), cancelled)
+        }
+        val (timedOut, wasCancelled) = terminalState
+        if (!timedOut) {
+            if (wasCancelled && failure == null) {
+                return IllegalStateException("issuer exchange was cancelled")
+            }
+            return failure
+        }
+        if (failure is IssuerExchangeTimeoutException) {
+            return failure
+        }
+        val timeout = IssuerExchangeTimeoutException()
+        if (failure != null && failure !== timeout) {
+            timeout.addSuppressed(failure)
+        }
+        return timeout
+    }
+
+    private fun remainingNanos(startedAtNanos: Long): Long {
+        val elapsed = monotonicNanos() - startedAtNanos
+        if (elapsed < 0 || elapsed >= exchangeTimeoutNanos) {
+            return 0
+        }
+        return exchangeTimeoutNanos - elapsed
+    }
+
+    private fun ensureBeforeDeadline(startedAtNanos: Long) {
+        if (remainingNanos(startedAtNanos) <= 0) {
+            throw IssuerExchangeTimeoutException()
+        }
     }
 
     internal fun endpointFor(work: NativeIssuerWork): URL {
@@ -152,13 +300,15 @@ internal class HttpsIssuerExchange(
         return endpoint
     }
 
-    private fun readBounded(input: InputStream): ByteArray {
+    private fun readBounded(input: InputStream, startedAtNanos: Long): ByteArray {
         var result = ByteArray(initialResponseBytes)
         var resultLength = 0
         val chunk = ByteArray(readChunkBytes)
         try {
             while (true) {
+                ensureBeforeDeadline(startedAtNanos)
                 val read = input.read(chunk)
+                ensureBeforeDeadline(startedAtNanos)
                 if (read < 0) {
                     break
                 }
@@ -207,7 +357,85 @@ internal class HttpsIssuerExchange(
         const val maximumIssuerResponseBytes = 1024 * 1024
         const val initialResponseBytes = 8 * 1024
         const val readChunkBytes = 8 * 1024
+        const val exchangeTimeoutSeconds = 45L
     }
+}
+
+private class ActiveIssuerConnection(
+    val connection: IssuerHttpConnection,
+    private val onCloseCompleted: (ActiveIssuerConnection) -> Unit,
+) {
+    private val closeStarted = AtomicBoolean(false)
+    private val completedClose = AtomicBoolean(false)
+
+    @Volatile
+    private var closeFailure: Throwable? = null
+
+    var timedOut: Boolean = false
+
+    var finished: Boolean = false
+
+    var releaseWhenClosed: Boolean = false
+
+    val closeCompleted: Boolean
+        get() = completedClose.get()
+
+    val closeFailed: Boolean
+        get() = closeFailure != null
+
+    fun closeOnce(): Throwable? {
+        if (closeStarted.compareAndSet(false, true)) {
+            try {
+                connection.close()
+            } catch (error: Throwable) {
+                closeFailure = error
+            } finally {
+                completedClose.set(true)
+                onCloseCompleted(this)
+            }
+        }
+        return closeFailure
+    }
+}
+
+private object SystemIssuerDeadlineScheduler : IssuerDeadlineScheduler {
+    override fun schedule(delayNanos: Long, action: () -> Unit): IssuerDeadlineTask {
+        require(delayNanos > 0) { "invalid issuer deadline delay" }
+        val executor = ScheduledThreadPoolExecutor(1) { runnable ->
+            Thread(runnable, deadlineThreadName).apply {
+                isDaemon = true
+            }
+        }.apply {
+            removeOnCancelPolicy = true
+            setContinueExistingPeriodicTasksAfterShutdownPolicy(false)
+            setExecuteExistingDelayedTasksAfterShutdownPolicy(false)
+        }
+        val future = try {
+            executor.schedule(
+                {
+                    try {
+                        action()
+                    } finally {
+                        executor.shutdown()
+                    }
+                },
+                delayNanos,
+                TimeUnit.NANOSECONDS,
+            )
+        } catch (error: Throwable) {
+            executor.shutdownNow()
+            throw error
+        }
+        return IssuerDeadlineTask {
+            future.cancel(false)
+            // Do not interrupt a deadline action that is currently closing the
+            // connection. It owns teardown until close returns and then shuts
+            // this one-shot executor down from its own finally block.
+            executor.shutdown()
+        }
+    }
+
+    private const val deadlineThreadName = "aurora-issuer-deadline"
 }
 
 private class HttpsIssuerHttpConnection(endpoint: URL) : IssuerHttpConnection {

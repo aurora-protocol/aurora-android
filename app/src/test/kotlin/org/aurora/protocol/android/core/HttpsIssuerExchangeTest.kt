@@ -1,10 +1,12 @@
 package org.aurora.protocol.android.core
 
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -211,6 +213,248 @@ class HttpsIssuerExchangeTest {
     }
 
     @Test
+    fun totalDeadlineClosesASlowDripResponseScrubsItsBufferAndAllowsReuse() {
+        val slow = SlowDripConnection()
+        val completed = FakeConnection(
+            IssuerHttpResponse(200, 1, ByteArrayInputStream(byteArrayOf(0x61)), "application/octet-stream"),
+        )
+        val connections = ArrayDeque<IssuerHttpConnection>(listOf(slow, completed))
+        val scheduler = ManualDeadlineScheduler()
+        val now = AtomicLong(0)
+        val exchange = HttpsIssuerExchange(
+            connectionFactory = IssuerHttpConnectionFactory { connections.removeFirst() },
+            exchangeTimeoutNanos = 100,
+            monotonicNanos = now::get,
+            deadlineScheduler = scheduler,
+        )
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+        val firstFailure = AtomicReference<Throwable?>()
+        val worker = thread(start = true, name = "issuer-deadline-test") {
+            try {
+                exchange.exchange(work).fill(0)
+            } catch (error: Throwable) {
+                firstFailure.set(error)
+            }
+        }
+
+        try {
+            assertTrue(slow.body.waitingForNextByte.await(2, TimeUnit.SECONDS))
+            now.set(100)
+            scheduler.fireNext()
+            worker.join(2_000)
+            assertFalse(worker.isAlive)
+            assertTrue(firstFailure.get() is IssuerExchangeTimeoutException)
+            assertEquals(1, slow.closeCalls.get())
+            assertTrue(requireNotNull(slow.body.observedReadBuffer).all { it == 0.toByte() })
+            assertEquals(0, scheduler.activeTaskCount())
+
+            val response = exchange.exchange(work)
+            try {
+                assertArrayEquals(byteArrayOf(0x61), response)
+            } finally {
+                response.fill(0)
+            }
+            assertEquals(1, completed.closeCalls)
+            assertEquals(0, scheduler.activeTaskCount())
+        } finally {
+            slow.body.close()
+            worker.join(2_000)
+            work.close()
+        }
+    }
+
+    @Test
+    fun monotonicDeadlineStopsADripWhenWatchdogDeliveryIsDelayed() {
+        val now = AtomicLong(0)
+        val body = AdvancingDripInputStream(now)
+        val connection = FakeConnection(
+            IssuerHttpResponse(200, -1, body, "application/octet-stream"),
+        )
+        val scheduler = ManualDeadlineScheduler()
+        val exchange = HttpsIssuerExchange(
+            connectionFactory = IssuerHttpConnectionFactory { connection },
+            exchangeTimeoutNanos = 100,
+            monotonicNanos = now::get,
+            deadlineScheduler = scheduler,
+        )
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+
+        try {
+            assertThrows(IssuerExchangeTimeoutException::class.java) { exchange.exchange(work) }
+            assertEquals(1, connection.closeCalls)
+            assertTrue(requireNotNull(body.observedReadBuffer).all { it == 0.toByte() })
+            assertEquals(0, scheduler.activeTaskCount())
+        } finally {
+            work.close()
+        }
+    }
+
+    @Test
+    fun timeoutRetainsExchangeOwnershipUntilTheClosingConnectionFinishes() {
+        val closeRelease = CountDownLatch(1)
+        val slow = SlowDripConnection(closeRelease)
+        val completed = FakeConnection(
+            IssuerHttpResponse(200, 1, ByteArrayInputStream(byteArrayOf(0x62)), "application/octet-stream"),
+        )
+        val opens = AtomicInteger()
+        val connections = ArrayDeque<IssuerHttpConnection>(listOf(slow, completed))
+        val scheduler = ManualDeadlineScheduler()
+        val now = AtomicLong(0)
+        val exchange = HttpsIssuerExchange(
+            connectionFactory = IssuerHttpConnectionFactory {
+                opens.incrementAndGet()
+                connections.removeFirst()
+            },
+            exchangeTimeoutNanos = 100,
+            monotonicNanos = now::get,
+            deadlineScheduler = scheduler,
+        )
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+        val firstFailure = AtomicReference<Throwable?>()
+        val worker = thread(start = true, name = "issuer-timeout-owner-test") {
+            try {
+                exchange.exchange(work).fill(0)
+            } catch (error: Throwable) {
+                firstFailure.set(error)
+            }
+        }
+        var deadlineWorker: Thread? = null
+
+        try {
+            assertTrue(slow.body.waitingForNextByte.await(2, TimeUnit.SECONDS))
+            now.set(100)
+            deadlineWorker = thread(start = true, name = "issuer-timeout-close-test") {
+                scheduler.fireNext()
+            }
+            assertTrue(slow.closeStarted.await(2, TimeUnit.SECONDS))
+            worker.join(2_000)
+            assertFalse(worker.isAlive)
+            assertTrue(firstFailure.get() is IssuerExchangeTimeoutException)
+            val overlap = assertThrows(IllegalStateException::class.java) { exchange.exchange(work) }
+            assertEquals("issuer exchange is already in progress", overlap.message)
+            assertEquals(1, opens.get())
+
+            closeRelease.countDown()
+            deadlineWorker.join(2_000)
+            assertFalse(deadlineWorker.isAlive)
+            assertEquals(1, slow.closeCalls.get())
+
+            val response = exchange.exchange(work)
+            try {
+                assertArrayEquals(byteArrayOf(0x62), response)
+            } finally {
+                response.fill(0)
+            }
+            assertEquals(2, opens.get())
+            assertEquals(1, completed.closeCalls)
+            assertEquals(0, scheduler.activeTaskCount())
+        } finally {
+            closeRelease.countDown()
+            slow.body.close()
+            deadlineWorker?.join(2_000)
+            worker.join(2_000)
+            work.close()
+        }
+    }
+
+    @Test
+    fun asynchronousCloseFailurePermanentlyPoisonsTheExchange() {
+        val closeRelease = CountDownLatch(1)
+        val slow = SlowDripConnection(
+            closeRelease = closeRelease,
+            closeFailure = IOException("connection close failed"),
+        )
+        val opens = AtomicInteger()
+        val scheduler = ManualDeadlineScheduler()
+        val now = AtomicLong(0)
+        val exchange = HttpsIssuerExchange(
+            connectionFactory = IssuerHttpConnectionFactory {
+                opens.incrementAndGet()
+                slow
+            },
+            exchangeTimeoutNanos = 100,
+            monotonicNanos = now::get,
+            deadlineScheduler = scheduler,
+        )
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+        val firstFailure = AtomicReference<Throwable?>()
+        val worker = thread(start = true, name = "issuer-timeout-close-failure-test") {
+            try {
+                exchange.exchange(work).fill(0)
+            } catch (error: Throwable) {
+                firstFailure.set(error)
+            }
+        }
+        val deadlineWorker = AtomicReference<Thread?>()
+
+        try {
+            assertTrue(slow.body.waitingForNextByte.await(2, TimeUnit.SECONDS))
+            now.set(100)
+            deadlineWorker.set(thread(start = true, name = "issuer-failing-close-test") {
+                scheduler.fireNext()
+            })
+            assertTrue(slow.closeStarted.await(2, TimeUnit.SECONDS))
+            worker.join(2_000)
+            assertFalse(worker.isAlive)
+            assertTrue(firstFailure.get() is IssuerExchangeTimeoutException)
+
+            closeRelease.countDown()
+            deadlineWorker.get()?.join(2_000)
+            val poisoned = assertThrows(IllegalStateException::class.java) { exchange.exchange(work) }
+            assertEquals("issuer exchange was cancelled", poisoned.message)
+            assertEquals(1, opens.get())
+            assertEquals(1, slow.closeCalls.get())
+        } finally {
+            closeRelease.countDown()
+            slow.body.close()
+            deadlineWorker.get()?.join(2_000)
+            worker.join(2_000)
+            work.close()
+        }
+    }
+
+    @Test
+    fun completionDisarmsADeadlineRacingWithFinalCleanup() {
+        val connection = FakeConnection(
+            IssuerHttpResponse(200, 1, ByteArrayInputStream(byteArrayOf(0x63)), "application/octet-stream"),
+        )
+        val scheduler = CompletionRaceDeadlineScheduler()
+        val exchange = HttpsIssuerExchange(
+            connectionFactory = IssuerHttpConnectionFactory { connection },
+            exchangeTimeoutNanos = 100,
+            monotonicNanos = { 0 },
+            deadlineScheduler = scheduler,
+        )
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+        val response = AtomicReference<ByteArray?>()
+        val failure = AtomicReference<Throwable?>()
+        val worker = thread(start = true, name = "issuer-completion-deadline-race-test") {
+            try {
+                response.set(exchange.exchange(work))
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+
+        try {
+            assertTrue(scheduler.cancelStarted.await(2, TimeUnit.SECONDS))
+            scheduler.fireWhileCancellationIsPending()
+            assertEquals(0, connection.closeCalls)
+            scheduler.allowCancellation.countDown()
+            worker.join(2_000)
+            assertFalse(worker.isAlive)
+            assertNull(failure.get())
+            assertArrayEquals(byteArrayOf(0x63), response.get())
+            assertEquals(1, connection.closeCalls)
+        } finally {
+            scheduler.allowCancellation.countDown()
+            worker.join(2_000)
+            response.getAndSet(null)?.fill(0)
+            work.close()
+        }
+    }
+
+    @Test
     fun preservesThePrimaryFailureAndClosesAnUnreadResponseBody() {
         val body = ThrowingCloseInputStream(byteArrayOf(0x50, 0x60))
         val connection = FakeConnection(
@@ -240,6 +484,7 @@ class HttpsIssuerExchangeTest {
     ) : IssuerHttpConnection {
         lateinit var request: ByteArray
         var closed = false
+        var closeCalls = 0
 
         override fun post(requestBody: ByteArray): IssuerHttpResponse {
             request = requestBody.copyOf()
@@ -248,7 +493,150 @@ class HttpsIssuerExchangeTest {
 
         override fun close() {
             closed = true
+            closeCalls += 1
             closeFailure?.let { throw it }
+        }
+    }
+
+    private class SlowDripConnection(
+        private val closeRelease: CountDownLatch? = null,
+        private val closeFailure: IOException? = null,
+    ) : IssuerHttpConnection {
+        val body = SlowDripInputStream()
+        val closeStarted = CountDownLatch(1)
+        val closeCalls = AtomicInteger()
+
+        override fun post(requestBody: ByteArray): IssuerHttpResponse = IssuerHttpResponse(
+            200,
+            -1,
+            body,
+            "application/octet-stream",
+        )
+
+        override fun close() {
+            closeCalls.incrementAndGet()
+            body.close()
+            closeStarted.countDown()
+            closeRelease?.let { release ->
+                check(release.await(2, TimeUnit.SECONDS)) { "timed out waiting to finish connection close" }
+            }
+            closeFailure?.let { throw it }
+        }
+    }
+
+    private class SlowDripInputStream : java.io.InputStream() {
+        val waitingForNextByte = CountDownLatch(1)
+        val release = CountDownLatch(1)
+
+        @Volatile
+        var observedReadBuffer: ByteArray? = null
+
+        @Volatile
+        private var closed = false
+
+        private var reads = 0
+
+        override fun read(): Int = throw AssertionError("bulk reads are required")
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            check(length > 0)
+            if (reads++ == 0) {
+                target[offset] = 0x5a
+                observedReadBuffer = target
+                return 1
+            }
+            waitingForNextByte.countDown()
+            check(release.await(2, TimeUnit.SECONDS)) { "timed out waiting for slow response close" }
+            if (closed) {
+                throw IOException("slow response was closed")
+            }
+            return -1
+        }
+
+        override fun close() {
+            closed = true
+            release.countDown()
+        }
+    }
+
+    private class AdvancingDripInputStream(
+        private val now: AtomicLong,
+    ) : java.io.InputStream() {
+        var observedReadBuffer: ByteArray? = null
+            private set
+        private var reads = 0
+
+        override fun read(): Int = throw AssertionError("bulk reads are required")
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            check(length > 0)
+            observedReadBuffer = target
+            return when (reads++) {
+                0 -> {
+                    now.set(50)
+                    target[offset] = 0x5a
+                    1
+                }
+                1 -> {
+                    now.set(100)
+                    target[offset] = 0x6a
+                    1
+                }
+                else -> -1
+            }
+        }
+    }
+
+    private class ManualDeadlineScheduler : IssuerDeadlineScheduler {
+        private val tasks = mutableListOf<ManualDeadlineTask>()
+
+        override fun schedule(delayNanos: Long, action: () -> Unit): IssuerDeadlineTask {
+            check(delayNanos > 0)
+            return ManualDeadlineTask(action).also(tasks::add)
+        }
+
+        fun fireNext() {
+            tasks.first { it.active }.fire()
+        }
+
+        fun activeTaskCount(): Int = tasks.count { it.active }
+    }
+
+    private class ManualDeadlineTask(
+        private val action: () -> Unit,
+    ) : IssuerDeadlineTask {
+        var active = true
+            private set
+
+        fun fire() {
+            check(active)
+            active = false
+            action()
+        }
+
+        override fun cancel() {
+            active = false
+        }
+    }
+
+    private class CompletionRaceDeadlineScheduler : IssuerDeadlineScheduler {
+        val cancelStarted = CountDownLatch(1)
+        val allowCancellation = CountDownLatch(1)
+        private lateinit var action: () -> Unit
+
+        override fun schedule(delayNanos: Long, action: () -> Unit): IssuerDeadlineTask {
+            check(delayNanos > 0)
+            this.action = action
+            return IssuerDeadlineTask {
+                cancelStarted.countDown()
+                check(allowCancellation.await(2, TimeUnit.SECONDS)) {
+                    "timed out waiting to finish deadline cancellation"
+                }
+            }
+        }
+
+        fun fireWhileCancellationIsPending() {
+            action()
         }
     }
 

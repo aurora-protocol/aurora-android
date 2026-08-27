@@ -128,8 +128,17 @@ alone validates the source and selects the next wallet entry.
 Issuer work is accepted only when it contains a non-empty handle, an HTTPS
 origin with no credentials, an absolute carrier path, and a non-empty body.
 The HTTP client disables caching and cookies, rejects redirects, requires a
-200 response, applies connect/read timeouts, and enforces a one-megabyte
-response limit before the response is passed to Core.
+200 response, applies connect/read timeouts plus one 45-second monotonic budget
+for the complete exchange, and enforces a one-megabyte response limit before
+the response is passed to Core. A per-exchange watchdog closes a connection
+that stalls during request upload, response headers, or a slow-drip body; every
+completion path cancels and shuts down that watchdog before releasing exchange
+ownership. If the platform close call has already unblocked the network request
+but is itself still returning, the timed-out caller is released while the
+exchange stays poisoned against reuse; the watchdog retains ownership only
+until close completes, then shuts down without being interrupted. A failed
+asynchronous close permanently poisons that exchange object instead of
+allowing a second request to overlap a connection whose teardown is uncertain.
 
 ## Verification
 

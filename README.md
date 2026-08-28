@@ -16,7 +16,15 @@ The client targets Android API 36, supports API 26 and later, and builds
 - Go 1.26.6.
 - A clean `aurora-core` checkout at the revision recorded in
   [`aurora-core.revision`](aurora-core.revision). By default it is expected at
-  `../aurora-core`; set `AURORA_CORE_DIR` to use a different location.
+  `../aurora-core`; set `AURORA_CORE_DIR` to use a different location. The
+  checkout must be a full clone; linked worktrees are rejected because Go
+  cannot stamp VCS provenance from them.
+
+The pin in `aurora-core.revision` (and the matching CI checkout ref) advances
+deliberately: bump it after reviewing an `aurora-core` change that affects the
+mobile package's behavior, then rebuild the native libraries and re-run
+`./scripts/aurora-android-check.sh` before committing. Core changes that never
+enter `mobile/auroracore`'s dependency graph do not require a bump.
 
 Set `JAVA_HOME` to the JDK 17 installation and `ANDROID_SDK_ROOT` (or
 `ANDROID_HOME`) to the Android SDK. The native build uses that SDK's pinned NDK

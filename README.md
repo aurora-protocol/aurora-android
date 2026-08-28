@@ -81,6 +81,18 @@ reviewed digest. A missing, substituted, malformed, or rejected asset fails the
 release build closed. Set `AURORA_RELEASE_TRUST_SHA256` to that same reviewed
 digest for every release Gradle and package-verification invocation.
 
+Author the sealed file from reviewed signed-seed roots and deployment trust
+tuples with the portable core:
+
+```sh
+(cd ../aurora-core && go run ./cmd/auroractl build-native-provisioning-trust \
+  --spec /secure/path/trust-spec.json --out /secure/path/AuroraSignedSeedTrust.bin)
+```
+
+The command writes a canonical, mode-0600 blob and refuses to overwrite an
+existing file unless `--force` is given; the preparation script re-validates it
+with `auroractl check-native-provisioning-trust` at the pinned Core revision.
+
 ## Design
 
 See [`docs/design/android-native-client.md`](docs/design/android-native-client.md)

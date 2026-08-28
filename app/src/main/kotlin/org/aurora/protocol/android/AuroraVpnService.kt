@@ -331,10 +331,11 @@ internal class CloseOnceNativePacketSession(
 }
 
 private class FileDescriptorTunnelDevice(
-    private val descriptor: ParcelFileDescriptor,
+    descriptor: ParcelFileDescriptor,
 ) : TunnelPacketDevice {
     private val input = FileInputStream(descriptor.fileDescriptor)
     private val output = FileOutputStream(descriptor.fileDescriptor)
+    private val teardown = TunnelDeviceTeardown(descriptor, input, output)
     private val inputBuffer = ByteArray(maximumPacketBytes)
     private val outputLock = Any()
 
@@ -359,15 +360,7 @@ private class FileDescriptorTunnelDevice(
 
     override fun close() {
         inputBuffer.fill(0)
-        try {
-            descriptor.close()
-        } finally {
-            try {
-                input.close()
-            } finally {
-                output.close()
-            }
-        }
+        teardown.close()
     }
 
     private companion object {

@@ -265,6 +265,27 @@ class NativeSessionControllerTest {
     }
 
     @Test
+    fun closesThePendingCoreHandleAndClearsMaterialWhenCoreRejectsCompletion() {
+        val issuerResponse = byteArrayOf(0x50, 0x60)
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            completeResult = false,
+        )
+        val issuer = RecordingIssuerExchange(issuerResponse)
+        val controller = NativeSessionController(core, issuer)
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.establish(byteArrayOf(0x10))
+        }
+
+        assertEquals("Core native session completion rejected", error.message)
+        assertArrayEquals(ByteArray(issuerResponse.size), issuerResponse)
+        assertArrayEquals(ByteArray(issuer.requestBodyReference.size), issuer.requestBodyReference)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
     fun closeFromTheTunnelSetupHookCancelsEstablishmentExactlyOnce() {
         val core = FakeCore(beginPayload = issuerWorkPayload(byteArrayOf(0x30)))
         val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
@@ -434,6 +455,7 @@ class NativeSessionControllerTest {
         private val allowBeginToReturn: CountDownLatch? = null,
         private val ingressFailure: Throwable? = null,
         private val completeFailure: Throwable? = null,
+        private val completeResult: Boolean = true,
         private val closeFailure: RuntimeException? = null,
         private val closeResult: Boolean = true,
     ) : NativeSessionCore {
@@ -453,7 +475,7 @@ class NativeSessionControllerTest {
             completeFailure?.let { throw it }
             this.issuerResponse = issuerResponse.copyOf()
             completed = true
-            return handle == 7L
+            return completeResult && handle == 7L
         }
 
         override fun ingressLocalPacket(handle: Long, packet: ByteArray): CoreResponse {

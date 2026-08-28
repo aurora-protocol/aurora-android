@@ -28,6 +28,42 @@ class NativeTrustConfiguratorTest {
     }
 
     @Test
+    fun mapsResourceAndCoreFailuresToTypedReasons() {
+        val openFailure = assertThrows(NativeTrustConfigurationException::class.java) {
+            NativeTrustConfigurator.configure(
+                openResource = { throw java.io.IOException("asset open failed") },
+                configureCore = { throw AssertionError("Core must not be called") },
+            )
+        }
+        assertEquals(NativeTrustConfigurationException.Reason.RESOURCE_UNAVAILABLE, openFailure.reason)
+
+        val typedFailure = assertThrows(NativeTrustConfigurationException::class.java) {
+            NativeTrustConfigurator.configure(
+                openResource = {
+                    throw NativeTrustConfigurationException(NativeTrustConfigurationException.Reason.INVALID_RESOURCE)
+                },
+                configureCore = { throw AssertionError("Core must not be called") },
+            )
+        }
+        assertEquals(NativeTrustConfigurationException.Reason.INVALID_RESOURCE, typedFailure.reason)
+
+        val trust = byteArrayOf(0x01)
+        var released: ByteArray? = null
+        val coreFailure = assertThrows(NativeTrustConfigurationException::class.java) {
+            NativeTrustConfigurator.configure(
+                openResource = { ByteArrayInputStream(trust) },
+                configureCore = { encoded ->
+                    released = encoded
+                    throw IllegalStateException("Core trust call failed")
+                },
+            )
+        }
+        assertEquals(NativeTrustConfigurationException.Reason.CORE_REJECTED, coreFailure.reason)
+        assertTrue(released != null)
+        assertArrayEquals(ByteArray(trust.size), released)
+    }
+
+    @Test
     fun rejectsEmptyOversizedAndRejectedTrustResources() {
         assertThrows(NativeTrustConfigurationException::class.java) {
             NativeTrustConfigurator.configure(

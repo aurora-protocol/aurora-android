@@ -19,6 +19,34 @@ import org.aurora.protocol.android.core.NativePacketSession
 
 class VpnServiceLifecycleTest {
     @Test
+    fun `a stale generation stop is ignored and a repeated start shares the connection`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val failures = ConcurrentLinkedQueue<Throwable>()
+        val process = VpnProcessLifecycle(failures::add, executor)
+        val lifecycle = process.acquire()
+        val generation = lifecycle.acceptedGeneration(31)
+
+        try {
+            assertEquals(VpnConnectionStop.Ignored, lifecycle.stop(expectedGeneration = generation + 1))
+            assertFalse(lifecycle.teardownInProgress)
+
+            assertEquals(VpnConnectionStart.Shared, lifecycle.start(32))
+            assertFalse(lifecycle.teardownInProgress)
+
+            val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
+            assertEquals(32, stop.serviceStartId)
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.discardConnectionWork(generation)
+            assertTrue(awaitCondition { !lifecycle.teardownInProgress })
+            assertTrue(failures.isEmpty())
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `platform stop and callback return do not wait for a blocking resource close`() {
         val executor = Executors.newSingleThreadExecutor()
         val failures = ConcurrentLinkedQueue<Throwable>()

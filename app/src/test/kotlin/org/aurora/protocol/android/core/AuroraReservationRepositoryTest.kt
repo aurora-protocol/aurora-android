@@ -350,6 +350,42 @@ class AuroraReservationRepositoryTest {
     }
 
     @Test
+    fun rejectsInvalidTimesAndExpiredCoreResultsWithoutPersisting() {
+        var coreCalls = 0
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ ->
+                coreCalls += 1
+                CoreResponse(CoreStatus.OK, encodedReservation(expiry = 100))
+            },
+            EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher),
+        )
+        val mistimedRequest = reservationRequest(byteArrayOf(0x71))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.reserveAndPersist(mistimedRequest, 0)
+        }
+
+        assertEquals(0, coreCalls)
+        assertArrayEquals(ByteArray(mistimedRequest.size), mistimedRequest)
+
+        val responsePayload = encodedReservation(expiry = 100)
+        val expiring = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> CoreResponse(CoreStatus.OK, responsePayload) },
+            EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher),
+        )
+        val request = reservationRequest(byteArrayOf(0x72))
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            expiring.reserveAndPersist(request, 100)
+        }
+
+        assertEquals("expired Core reservation", error.message)
+        assertArrayEquals(ByteArray(request.size), request)
+        assertArrayEquals(ByteArray(responsePayload.size), responsePayload)
+        assertNull(expiring.load())
+    }
+
+    @Test
     fun rejectsACoreResultAlreadyNamedByTheCallerEnvelope() {
         val callerKey = ByteArray(48) { 0x66 }
         val storage = EncryptedReservationStore(RepositoryMemoryBlobStore(), RepositoryCipher)

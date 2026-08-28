@@ -1,6 +1,7 @@
 package org.aurora.protocol.android.core
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -24,6 +25,16 @@ class ProvisioningImportTest {
         assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode(CharArray(0)) }
         assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQI".toCharArray()) }
         assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode("AQID\n".toCharArray()) }
+    }
+
+    @Test
+    fun rejectsNonAsciiCharactersAndClearsTheInput() {
+        val encoded = charArrayOf('A', 'Q', 'é', 'D')
+
+        val error = assertThrows(IllegalArgumentException::class.java) { ProvisioningImport.decode(encoded) }
+
+        assertEquals("invalid provisioning import encoding", error.message)
+        assertArrayEquals(CharArray(4), encoded)
     }
 
     @Test

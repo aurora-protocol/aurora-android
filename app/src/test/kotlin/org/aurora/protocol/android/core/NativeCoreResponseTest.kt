@@ -34,6 +34,15 @@ class NativeCoreResponseTest {
     }
 
     @Test
+    fun rejectsAnEmptyResultFrame() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            NativeCoreResponse.decode(ByteArray(0))
+        }
+
+        assertEquals("missing Core result", error.message)
+    }
+
+    @Test
     fun rejectsInvalidOrPayloadBearingErrorResults() {
         val invalidStatus = byteArrayOf(3)
         val payloadBearingConflict = byteArrayOf(1, 0x01)

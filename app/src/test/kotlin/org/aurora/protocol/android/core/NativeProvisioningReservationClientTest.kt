@@ -23,6 +23,20 @@ class NativeProvisioningReservationClientTest {
     }
 
     @Test
+    fun rejectsInvalidRequestsBeforeCallingCore() {
+        var coreCalls = 0
+        val client = NativeProvisioningReservationClient { _, _ ->
+            coreCalls += 1
+            throw AssertionError("invalid input reached Core")
+        }
+
+        assertThrows(IllegalArgumentException::class.java) { client.reserve(ByteArray(0), 123) }
+        assertThrows(IllegalArgumentException::class.java) { client.reserve(byteArrayOf(0x01), 0) }
+        assertThrows(IllegalArgumentException::class.java) { client.reserve(byteArrayOf(0x01), -1) }
+        assertEquals(0, coreCalls)
+    }
+
+    @Test
     fun rejectsFailedCoreResponsesAndStillClearsTheirPayload() {
         val payload = byteArrayOf(0x55)
         val response = CoreResponse(CoreStatus.ERROR, payload)

@@ -39,6 +39,26 @@ class NativeTunnelRuntimeTest {
     }
 
     @Test
+    fun rejectsASecondStartWhileRunning() {
+        val device = FakeTunnelPacketDevice()
+        val session = FakeNativePacketSession()
+        val runtime = NativeTunnelRuntime(session, device) { throw AssertionError("unexpected terminal failure", it) }
+
+        runtime.start()
+
+        try {
+            val error = assertThrows(IllegalStateException::class.java) { runtime.start() }
+            assertEquals("tunnel runtime is already active", error.message)
+            assertFalse(session.closed)
+            assertFalse(device.closed)
+        } finally {
+            runtime.close()
+        }
+        assertTrue(session.closed)
+        assertTrue(device.closed)
+    }
+
+    @Test
     fun forwardsImmediateAndDeferredPacketsThenClosesBothResources() {
         val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
         val device = FakeTunnelPacketDevice(ingress)

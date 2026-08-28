@@ -22,6 +22,10 @@ if [ ! -d "$CORE_DIR/cmd/auroractl" ]; then
     printf 'aurora-core checkout is unavailable: %s\n' "$CORE_DIR" >&2
     exit 1
 fi
+if [ ! -d "$CORE_DIR/.git" ]; then
+    printf 'aurora-core checkout must be a full checkout, not a linked worktree (Go buildvcs cannot stamp VCS provenance there): %s\n' "$CORE_DIR" >&2
+    exit 1
+fi
 actual_core_revision="$(git -C "$CORE_DIR" rev-parse HEAD)"
 if [ "$actual_core_revision" != "$EXPECTED_CORE_REVISION" ]; then
     printf 'aurora-core revision does not match the Android ABI pin\n' >&2

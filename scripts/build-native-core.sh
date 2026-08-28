@@ -16,6 +16,10 @@ if [ ! -f "$CORE_DIR/go.mod" ]; then
     printf 'aurora-core checkout is unavailable: %s\n' "$CORE_DIR" >&2
     exit 1
 fi
+if [ ! -d "$CORE_DIR/.git" ]; then
+    printf 'aurora-core checkout must be a full checkout, not a linked worktree (Go buildvcs cannot stamp VCS provenance there): %s\n' "$CORE_DIR" >&2
+    exit 1
+fi
 if [ ! -d "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" ]; then
     printf 'Android NDK is unavailable: %s\n' "$ANDROID_NDK_HOME" >&2
     exit 1

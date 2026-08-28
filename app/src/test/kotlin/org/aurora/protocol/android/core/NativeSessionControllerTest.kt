@@ -1,5 +1,6 @@
 package org.aurora.protocol.android.core
 
+import java.io.IOException
 import java.net.URL
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
@@ -223,6 +224,102 @@ class NativeSessionControllerTest {
     }
 
     @Test
+    fun closesThePendingCoreHandleAndClearsMaterialWhenTunnelSetupFails() {
+        val issuerResponse = byteArrayOf(0x50, 0x60)
+        val core = FakeCore(beginPayload = issuerWorkPayload(byteArrayOf(0x30)))
+        val issuer = RecordingIssuerExchange(issuerResponse)
+        val controller = NativeSessionController(core, issuer)
+        val provisioning = byteArrayOf(0x10, 0x20)
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.establish(provisioning) { throw IllegalStateException("TUN setup failed") }
+        }
+
+        assertEquals("TUN setup failed", error.message)
+        assertArrayEquals(ByteArray(provisioning.size), provisioning)
+        assertArrayEquals(ByteArray(issuerResponse.size), issuerResponse)
+        assertArrayEquals(ByteArray(issuer.requestBodyReference.size), issuer.requestBodyReference)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
+    fun closesThePendingCoreHandleWhenCoreCompletionThrows() {
+        val issuerResponse = byteArrayOf(0x50, 0x60)
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            completeFailure = IOException("Core completion transport failed"),
+        )
+        val issuer = RecordingIssuerExchange(issuerResponse)
+        val controller = NativeSessionController(core, issuer)
+
+        val error = assertThrows(IOException::class.java) {
+            controller.establish(byteArrayOf(0x10))
+        }
+
+        assertEquals("Core completion transport failed", error.message)
+        assertArrayEquals(ByteArray(issuerResponse.size), issuerResponse)
+        assertArrayEquals(ByteArray(issuer.requestBodyReference.size), issuer.requestBodyReference)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
+    fun closeFromTheTunnelSetupHookCancelsEstablishmentExactlyOnce() {
+        val core = FakeCore(beginPayload = issuerWorkPayload(byteArrayOf(0x30)))
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        val outcome = arrayOfNulls<Throwable>(1)
+
+        try {
+            controller.establish(byteArrayOf(0x10)) {
+                controller.close()
+            }
+        } catch (error: Throwable) {
+            outcome[0] = error
+        }
+
+        assertTrue(outcome[0] is IllegalStateException)
+        assertEquals("native session was cancelled", outcome[0]?.message)
+        assertEquals(listOf(7L), core.closedHandles)
+        assertFalse(controller.isEstablished)
+        controller.close()
+        assertEquals(listOf(7L), core.closedHandles)
+    }
+
+    @Test
+    fun clearsProvisioningAndCreatesNoHandleWhenCoreBeginPayloadIsMalformed() {
+        val core = FakeCore(beginPayload = byteArrayOf(0x7B, 0x7B))
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        val provisioning = byteArrayOf(0x10, 0x20)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            controller.establish(provisioning)
+        }
+
+        assertArrayEquals(ByteArray(provisioning.size), provisioning)
+        assertEquals(emptyList<Long>(), core.closedHandles)
+        assertFalse(controller.isEstablished)
+    }
+
+    @Test
+    fun clearsTheCallerPacketWhenTheCoreIngressCallThrows() {
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            ingressFailure = IOException("Core ingress transport failed"),
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        controller.establish(byteArrayOf(0x10))
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+
+        assertThrows(IOException::class.java) {
+            controller.ingressLocalPacket(ingress)
+        }
+
+        assertArrayEquals(ByteArray(ingress.size), ingress)
+        controller.close()
+    }
+
+    @Test
     fun refusesToStartAfterAnExplicitCloseAndClearsProvisioning() {
         val controller = NativeSessionController(FakeCore(issuerWorkPayload(byteArrayOf(0x30))), RecordingIssuerExchange(byteArrayOf(0x50)))
         val provisioning = byteArrayOf(0x10)
@@ -335,6 +432,8 @@ class NativeSessionControllerTest {
         private val nextPacket: ByteArray = byteArrayOf(0x60),
         private val beginStarted: CountDownLatch? = null,
         private val allowBeginToReturn: CountDownLatch? = null,
+        private val ingressFailure: Throwable? = null,
+        private val completeFailure: Throwable? = null,
         private val closeFailure: RuntimeException? = null,
         private val closeResult: Boolean = true,
     ) : NativeSessionCore {
@@ -351,12 +450,14 @@ class NativeSessionControllerTest {
         }
 
         override fun completeNativeSession(handle: Long, issuerResponse: ByteArray): Boolean {
+            completeFailure?.let { throw it }
             this.issuerResponse = issuerResponse.copyOf()
             completed = true
             return handle == 7L
         }
 
         override fun ingressLocalPacket(handle: Long, packet: ByteArray): CoreResponse {
+            ingressFailure?.let { throw it }
             ingressPacket = packet.copyOf()
             val responsePayload = ingressPayload.copyOf()
             ingressResponsePayloadReference = responsePayload

@@ -2,6 +2,7 @@ package org.aurora.protocol.android.core
 
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -197,6 +198,140 @@ class NativeTunnelRuntimeTest {
         }
     }
 
+    @Test
+    fun clearsTheIngressInputWhenSessionProcessingFailsTerminally() {
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+        val device = FakeTunnelPacketDevice(ingress)
+        val session = ThrowingIngressNativePacketSession()
+        val terminalFailures = LinkedBlockingQueue<Throwable>()
+        val runtime = NativeTunnelRuntime(session, device) { terminalFailures.offer(it) }
+
+        runtime.start()
+
+        try {
+            assertTrue(terminalFailures.poll(2, TimeUnit.SECONDS) is IOException)
+            assertArrayEquals(ByteArray(ingress.size), ingress)
+        } finally {
+            runtime.close()
+        }
+        assertTrue(session.closed)
+        assertTrue(device.closed)
+    }
+
+    @Test
+    fun clearsEveryImmediatePacketWhenOneIsRejectedAsInvalid() {
+        val ingress = byteArrayOf(0x45)
+        val valid = byteArrayOf(0x60, 0x01)
+        val device = FakeTunnelPacketDevice(ingress)
+        val session = InvalidSecondImmediatePacketSession(valid)
+        val terminalFailures = LinkedBlockingQueue<Throwable>()
+        val runtime = NativeTunnelRuntime(session, device) { terminalFailures.offer(it) }
+
+        runtime.start()
+
+        try {
+            assertArrayEquals(byteArrayOf(0x60, 0x01), device.written.poll(2, TimeUnit.SECONDS))
+            assertTrue(terminalFailures.poll(2, TimeUnit.SECONDS) is IllegalArgumentException)
+            assertArrayEquals(ByteArray(valid.size), valid)
+            assertArrayEquals(ByteArray(ingress.size), ingress)
+        } finally {
+            runtime.close()
+        }
+    }
+
+    @Test
+    fun reportsASingleTerminalFailureWhenBothWorkersFail() {
+        val device = FailingReadTunnelPacketDevice()
+        val session = FailingNextLocalPacketSession()
+        val terminalFailures = LinkedBlockingQueue<Throwable>()
+        val runtime = NativeTunnelRuntime(session, device) { terminalFailures.offer(it) }
+
+        runtime.start()
+
+        try {
+            assertTrue(terminalFailures.poll(2, TimeUnit.SECONDS) != null)
+            runtime.close()
+            assertEquals(null, terminalFailures.poll(200, TimeUnit.MILLISECONDS))
+        } finally {
+            runtime.close()
+        }
+        assertTrue(session.closed)
+        assertTrue(device.closed)
+    }
+
+    @Test
+    fun concurrentExternalClosesJoinASingleTeardown() {
+        val device = FakeTunnelPacketDevice()
+        val session = CloseCountingNativePacketSession()
+        val runtime = NativeTunnelRuntime(session, device) { throw AssertionError("unexpected terminal failure", it) }
+        val outcomes = LinkedBlockingQueue<Throwable?>()
+
+        runtime.start()
+        val closers = (1..2).map { index ->
+            thread(start = true, name = "tunnel-close-join-$index") {
+                outcomes.offer(
+                    try {
+                        runtime.close()
+                        null
+                    } catch (error: Throwable) {
+                        error
+                    },
+                )
+            }
+        }
+        closers.forEach { it.join(2_000) }
+
+        assertEquals(listOf(null, null), listOf(outcomes.poll(), outcomes.poll()))
+        assertEquals(1, session.closeCalls.get())
+        assertTrue(device.closed)
+    }
+
+    @Test
+    fun aCloseRacingAnInFlightStartWinsAndCompletesTeardownOnce() {
+        val device = FakeTunnelPacketDevice()
+        val session = CloseCountingNativePacketSession()
+        val delegate = Executors.newFixedThreadPool(2)
+        val submissionEntered = CountDownLatch(1)
+        val releaseSubmission = CountDownLatch(1)
+        val submissions = AtomicInteger()
+        val workers = object : ExecutorService by delegate {
+            override fun execute(command: Runnable) {
+                if (submissions.incrementAndGet() == 1) {
+                    submissionEntered.countDown()
+                    check(releaseSubmission.await(2, TimeUnit.SECONDS))
+                }
+                delegate.execute(command)
+            }
+        }
+        val runtime = NativeTunnelRuntime(session, device, workers) { throw AssertionError("unexpected terminal failure", it) }
+        val startFailure = AtomicReference<Throwable?>()
+
+        val starter = thread(start = true, name = "tunnel-start-race-test") {
+            try {
+                runtime.start()
+            } catch (error: Throwable) {
+                startFailure.set(error)
+            }
+        }
+
+        try {
+            assertTrue(submissionEntered.await(2, TimeUnit.SECONDS))
+            runtime.close()
+            releaseSubmission.countDown()
+            starter.join(2_000)
+
+            assertFalse(starter.isAlive)
+            assertEquals(null, startFailure.get())
+            assertEquals(1, session.closeCalls.get())
+            assertTrue(device.closed)
+            assertTrue(workers.isShutdown)
+        } finally {
+            releaseSubmission.countDown()
+            starter.join(2_000)
+            workers.shutdownNow()
+        }
+    }
+
     private class FakeNativePacketSession : NativePacketSession {
         val deferredPackets = LinkedBlockingQueue<ByteArray>()
         var closed = false
@@ -303,6 +438,72 @@ class NativeTunnelRuntimeTest {
         override fun close() {
             closeAttempted = true
             throw closeFailure
+        }
+    }
+
+    private class ThrowingIngressNativePacketSession : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+        var closed = false
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = throw IOException("Core packet ingress failed")
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            closed = true
+            deferredPackets.offer(byteArrayOf(0x45))
+        }
+    }
+
+    private class InvalidSecondImmediatePacketSession(
+        private val valid: ByteArray,
+    ) : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = listOf(valid, ByteArray(0))
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            deferredPackets.offer(byteArrayOf(0x45))
+        }
+    }
+
+    private class FailingReadTunnelPacketDevice : TunnelPacketDevice {
+        var closed = false
+
+        override fun readPacket(): ByteArray? = throw IOException("tunnel read failed")
+
+        override fun writePacket(packet: ByteArray) = Unit
+
+        override fun close() {
+            closed = true
+        }
+    }
+
+    private class FailingNextLocalPacketSession : NativePacketSession {
+        var closed = false
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = emptyList()
+
+        override fun nextLocalPacket(): ByteArray = throw IOException("Core packet egress failed")
+
+        override fun close() {
+            closed = true
+        }
+    }
+
+    private class CloseCountingNativePacketSession : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+        val closeCalls = AtomicInteger()
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> = emptyList()
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            closeCalls.incrementAndGet()
+            deferredPackets.offer(byteArrayOf(0x45))
         }
     }
 

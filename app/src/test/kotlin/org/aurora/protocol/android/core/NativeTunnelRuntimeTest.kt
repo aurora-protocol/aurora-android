@@ -60,6 +60,31 @@ class NativeTunnelRuntimeTest {
     }
 
     @Test
+    fun continuesIngressAfterANonterminalPacketDrop() {
+        val dropped = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+        val accepted = byteArrayOf(0x60, 0x00, 0x00, 0x00)
+        val immediate = byteArrayOf(0x60, 0x01)
+        val device = FakeTunnelPacketDevice(dropped, accepted)
+        val session = DropThenForwardNativePacketSession(immediate)
+        val terminalFailures = LinkedBlockingQueue<Throwable>()
+        val runtime = NativeTunnelRuntime(session, device) { terminalFailures.offer(it) }
+
+        runtime.start()
+
+        try {
+            assertArrayEquals(immediate, device.written.poll(2, TimeUnit.SECONDS))
+            assertEquals(2, session.ingressCalls.get())
+            assertArrayEquals(ByteArray(dropped.size), dropped)
+            assertArrayEquals(ByteArray(accepted.size), accepted)
+            assertEquals(null, terminalFailures.poll())
+        } finally {
+            runtime.close()
+        }
+        assertTrue(session.closed)
+        assertTrue(device.closed)
+    }
+
+    @Test
     fun clearsEveryImmediatePacketWhenTunnelWriteFails() {
         val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
         val immediateFirst = byteArrayOf(0x45, 0x00)
@@ -186,14 +211,32 @@ class NativeTunnelRuntimeTest {
         }
     }
 
-    private class FakeTunnelPacketDevice(private val firstPacket: ByteArray) : TunnelPacketDevice {
+    private class DropThenForwardNativePacketSession(
+        private val immediate: ByteArray,
+    ) : NativePacketSession {
+        private val deferredPackets = LinkedBlockingQueue<ByteArray>()
+        val ingressCalls = AtomicInteger()
+        var closed = false
+
+        override fun ingressLocalPacket(packet: ByteArray): List<ByteArray> =
+            if (ingressCalls.incrementAndGet() == 1) emptyList() else listOf(immediate.copyOf())
+
+        override fun nextLocalPacket(): ByteArray = deferredPackets.take()
+
+        override fun close() {
+            closed = true
+            deferredPackets.offer(byteArrayOf(0x45))
+        }
+    }
+
+    private class FakeTunnelPacketDevice(vararg packets: ByteArray) : TunnelPacketDevice {
         private val inbound = LinkedBlockingQueue<ByteArray>()
         private val ingressCleanupReached = CountDownLatch(1)
         val written = LinkedBlockingQueue<ByteArray>()
         var closed = false
 
         init {
-            inbound.offer(firstPacket)
+            packets.forEach(inbound::offer)
         }
 
         override fun readPacket(): ByteArray? {

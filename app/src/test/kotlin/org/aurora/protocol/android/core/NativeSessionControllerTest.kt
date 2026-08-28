@@ -138,6 +138,49 @@ class NativeSessionControllerTest {
     }
 
     @Test
+    fun treatsStatusOnlyIngressConflictAsAPacketDropAndClearsTheCallerPacket() {
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            ingressStatus = CoreStatus.CONFLICT,
+            ingressPayload = ByteArray(0),
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        controller.establish(byteArrayOf(0x10))
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+
+        val immediatePackets = controller.ingressLocalPacket(ingress)
+
+        assertTrue(immediatePackets.isEmpty())
+        assertArrayEquals(ByteArray(ingress.size), ingress)
+        assertArrayEquals(byteArrayOf(0x45, 0x00, 0x00, 0x14), core.ingressPacket)
+        assertArrayEquals(ByteArray(0), core.ingressResponsePayloadReference)
+        assertTrue(controller.isEstablished)
+        controller.close()
+    }
+
+    @Test
+    fun keepsStatusOnlyIngressErrorTerminalAndClearsTheCallerPacket() {
+        val core = FakeCore(
+            beginPayload = issuerWorkPayload(byteArrayOf(0x30)),
+            ingressStatus = CoreStatus.ERROR,
+            ingressPayload = ByteArray(0),
+        )
+        val controller = NativeSessionController(core, RecordingIssuerExchange(byteArrayOf(0x50)))
+        controller.establish(byteArrayOf(0x10))
+        val ingress = byteArrayOf(0x45, 0x00, 0x00, 0x14)
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            controller.ingressLocalPacket(ingress)
+        }
+
+        assertEquals("Core local packet ingress rejected", error.message)
+        assertArrayEquals(ByteArray(ingress.size), ingress)
+        assertArrayEquals(byteArrayOf(0x45, 0x00, 0x00, 0x14), core.ingressPacket)
+        assertArrayEquals(ByteArray(0), core.ingressResponsePayloadReference)
+        controller.close()
+    }
+
+    @Test
     fun clearsMalformedCoreIngressResultsAndCallerPackets() {
         val malformedResult = byteArrayOf(0x01, 0x00, 0x00, 0x02, 0x45)
         val core = FakeCore(
@@ -287,6 +330,7 @@ class NativeSessionControllerTest {
 
     private class FakeCore(
         private val beginPayload: ByteArray,
+        private val ingressStatus: CoreStatus = CoreStatus.OK,
         private val ingressPayload: ByteArray = localPacketsPayload(byteArrayOf(0x45)),
         private val nextPacket: ByteArray = byteArrayOf(0x60),
         private val beginStarted: CountDownLatch? = null,
@@ -316,7 +360,7 @@ class NativeSessionControllerTest {
             ingressPacket = packet.copyOf()
             val responsePayload = ingressPayload.copyOf()
             ingressResponsePayloadReference = responsePayload
-            return CoreResponse(CoreStatus.OK, responsePayload)
+            return CoreResponse(ingressStatus, responsePayload)
         }
 
         override fun nextLocalPacket(handle: Long): ByteArray = nextPacket.copyOf()

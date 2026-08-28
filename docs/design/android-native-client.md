@@ -135,6 +135,10 @@ envelope on every completion path. Successfully decoded packet copies transfer
 to the tunnel runtime, which clears them after writing; partially decoded
 copies are cleared before a malformed result is rejected. Packet traffic is
 never expanded into JSON, base64, or immutable strings on this hot path.
+A status-only conflict from local packet ingress represents bounded Core queue
+backpressure and drops that packet without stopping the tunnel; a status-only
+error remains terminal. The caller-owned plaintext packet is cleared in both
+cases.
 
 Provisioning reservations use Core's binary operation 19. The private result is
 an exact three-byte big-endian provisioning length, 1..1 MiB opaque

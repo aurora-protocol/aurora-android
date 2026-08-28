@@ -21,12 +21,29 @@ class NativeCoreResponseTest {
     }
 
     @Test
-    fun rejectsInvalidOrPayloadBearingErrorResults() {
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeCoreResponse.decode(byteArrayOf(3))
+    fun decodesStatusOnlyConflictAndErrorResultsAndClearsTheirRawFrames() {
+        listOf(CoreStatus.CONFLICT, CoreStatus.ERROR).forEach { status ->
+            val raw = byteArrayOf(status.wireValue.toByte())
+
+            NativeCoreResponse.decode(raw).use { response ->
+                assertEquals(status, response.status)
+                assertArrayEquals(ByteArray(0), response.payload)
+            }
+            assertArrayEquals(ByteArray(1), raw)
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeCoreResponse.decode(byteArrayOf(2, 0x01))
+    }
+
+    @Test
+    fun rejectsInvalidOrPayloadBearingErrorResults() {
+        val invalidStatus = byteArrayOf(3)
+        val payloadBearingConflict = byteArrayOf(1, 0x01)
+        val payloadBearingError = byteArrayOf(2, 0x01)
+
+        listOf(invalidStatus, payloadBearingConflict, payloadBearingError).forEach { raw ->
+            assertThrows(IllegalArgumentException::class.java) {
+                NativeCoreResponse.decode(raw)
+            }
+            assertArrayEquals(ByteArray(raw.size), raw)
         }
     }
 

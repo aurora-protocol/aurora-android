@@ -117,8 +117,14 @@ internal class NativeSessionController(
         try {
             val handle = establishedHandle()
             core.ingressLocalPacket(handle, packet).use { response ->
-                check(response.status == CoreStatus.OK) { "Core local packet ingress rejected" }
-                return NativeLocalPacketsParser.decode(response.takePayload())
+                return when (response.status) {
+                    CoreStatus.OK -> NativeLocalPacketsParser.decode(response.takePayload())
+                    CoreStatus.CONFLICT -> {
+                        check(response.payload.isEmpty()) { "Core local packet ingress conflict included a payload" }
+                        emptyList()
+                    }
+                    CoreStatus.ERROR -> error("Core local packet ingress rejected")
+                }
             }
         } finally {
             packet.fill(0)

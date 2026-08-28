@@ -10,7 +10,7 @@ internal interface NativeSessionCore {
 
 internal object NativeCoreJni : NativeSessionCore {
     private const val maximumTrustBytes = 64 * 1024
-    private const val maximumProvisioningBytes = 16 * 1024 * 1024
+    private const val maximumNativeProvisioningBytes = 1024 * 1024
     private const val maximumReservationInputBytes = (16 * 1024 * 1024) + 4 + 1 + (64 * 48)
     private const val maximumIssuerResponseBytes = 1024 * 1024
     private const val maximumLocalPacketBytes = 65535
@@ -23,13 +23,15 @@ internal object NativeCoreJni : NativeSessionCore {
     fun reserveNativeProvisioning(request: ByteArray, issuedAtUnix: Long): CoreResponse {
         require(request.isNotEmpty() && request.size <= maximumReservationInputBytes) { "invalid reservation request" }
         require(issuedAtUnix > 0) { "invalid reservation time" }
-        val raw = nativeCall(CoreOperation.RESERVE_NATIVE_PROVISIONING_JSON.wireValue, request, issuedAtUnix)
+        val raw = nativeCall(CoreOperation.RESERVE_NATIVE_PROVISIONING.wireValue, request, issuedAtUnix)
             ?: throw IllegalStateException("Core reservation call failed")
         return NativeCoreResponse.decode(raw)
     }
 
     override fun beginNativeSession(provisioning: ByteArray): CoreResponse {
-        require(provisioning.isNotEmpty() && provisioning.size <= maximumProvisioningBytes) { "invalid native provisioning" }
+        require(provisioning.isNotEmpty() && provisioning.size <= maximumNativeProvisioningBytes) {
+            "invalid native provisioning"
+        }
         val raw = nativeCall(CoreOperation.BEGIN_NATIVE_SESSION_JSON.wireValue, provisioning, 0)
             ?: throw IllegalStateException("Core native session start failed")
         return NativeCoreResponse.decode(raw)

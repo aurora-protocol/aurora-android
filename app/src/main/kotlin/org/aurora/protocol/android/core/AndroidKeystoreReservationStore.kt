@@ -188,7 +188,7 @@ private class AndroidReservationBlobStore(context: Context) : EncryptedReservati
 
     private companion object {
         const val fileName = "aurora-reservation.bin"
-        const val maximumEncryptedBytes = (16 * 1024 * 1024) + (8 * 1024) + 256
+        const val maximumEncryptedBytes = (1024 * 1024) + (8 * 1024) + 256
         val processLock = Any()
     }
 }

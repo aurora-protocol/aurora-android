@@ -2,7 +2,6 @@ package org.aurora.protocol.android.core
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -377,19 +376,12 @@ class AuroraReservationRepositoryTest {
         provisioning: ByteArray = byteArrayOf(0x01, 0x02),
         spentHintKey: ByteArray = ByteArray(48),
         expiry: Long = 123,
-    ): ByteArray {
-        val encodedProvisioning = Base64.getEncoder().encodeToString(provisioning)
-        val encodedSpentHintKey = Base64.getEncoder().encodeToString(spentHintKey)
-        val relayBucketId = Base64.getEncoder().encodeToString(ByteArray(16))
-        return """
-            {
-              "provisioning_base64":"$encodedProvisioning",
-              "spent_hint_key_base64":"$encodedSpentHintKey",
-              "relay_bucket_id_base64":"$relayBucketId",
-              "access_hint_expiry_unix":$expiry
-            }
-        """.trimIndent().toByteArray()
-    }
+    ): ByteArray = encodedCoreReservation(
+        provisioning = provisioning,
+        spentHintKey = spentHintKey,
+        relayBucketId = ByteArray(16),
+        expiry = expiry,
+    )
 
     private fun reservation(spentHintKey: ByteArray, expiry: Long): CoreReservation {
         return CoreReservation(

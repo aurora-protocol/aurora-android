@@ -5,8 +5,8 @@ import org.junit.Test
 
 class CoreOperationTest {
     @Test
-    fun reservesNativeProvisioningThroughTheJsonOnlyOperation() {
-        assertEquals(22, CoreOperation.RESERVE_NATIVE_PROVISIONING_JSON.wireValue)
+    fun reservesNativeProvisioningThroughTheBoundedBinaryOperation() {
+        assertEquals(19, CoreOperation.RESERVE_NATIVE_PROVISIONING.wireValue)
     }
 
     @Test

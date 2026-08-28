@@ -6,14 +6,11 @@ internal class NativeProvisioningReservationClient(
     fun reserve(request: ByteArray, issuedAtUnix: Long): CoreReservation {
         require(request.isNotEmpty() && request.size <= maximumReservationInputBytes) { "invalid reservation request" }
         require(issuedAtUnix > 0) { "invalid reservation time" }
-        val response = reserveCore(request, issuedAtUnix)
-        try {
+        reserveCore(request, issuedAtUnix).use { response ->
             if (response.status != CoreStatus.OK) {
                 throw IllegalStateException("Core reservation failed")
             }
-            return CoreReservationParser.decode(response.payload)
-        } finally {
-            response.close()
+            return CoreReservationParser.decode(response.takePayload())
         }
     }
 

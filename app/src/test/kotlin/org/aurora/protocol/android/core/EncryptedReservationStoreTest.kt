@@ -173,6 +173,25 @@ class EncryptedReservationStoreTest {
     }
 
     @Test
+    fun rejectsAndClearsProvisioningLargerThanThePinnedCoreContract() {
+        val store = EncryptedReservationStore(MemoryBlobStore(), InvertingCipher)
+        val oversized = CoreReservation(
+            provisioning = ByteArray((1024 * 1024) + 1) { 0x41 },
+            spentHintKey = ByteArray(48) { it.toByte() },
+            relayBucketId = ByteArray(16) { it.toByte() },
+            accessHintExpiryUnix = 500,
+        )
+
+        assertThrows(ReservationStorageException::class.java) {
+            store.save(oversized, ByteArray(32), 100)
+        }
+
+        assertArrayEquals(ByteArray(oversized.provisioning.size), oversized.provisioning)
+        assertArrayEquals(ByteArray(oversized.spentHintKey.size), oversized.spentHintKey)
+        assertArrayEquals(ByteArray(oversized.relayBucketId.size), oversized.relayBucketId)
+    }
+
+    @Test
     fun deduplicatesCallerHintsAndCapsTheirUnionWithTheCoreResult() {
         val digest = ByteArray(32) { 0x11 }
         val store = EncryptedReservationStore(MemoryBlobStore(), InvertingCipher)

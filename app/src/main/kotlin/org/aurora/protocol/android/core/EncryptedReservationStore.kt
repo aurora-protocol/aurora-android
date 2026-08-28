@@ -237,7 +237,7 @@ internal class EncryptedReservationStore(
     }
 
     private companion object {
-        const val maximumPlaintextBytes = (16 * 1024 * 1024) + (8 * 1024)
+        const val maximumPlaintextBytes = (1024 * 1024) + (8 * 1024)
         const val maximumEncryptedBytes = maximumPlaintextBytes + 256
         const val digestBytes = 32
         const val spentHintKeyBytes = 48
@@ -305,7 +305,7 @@ private object ReservationStorageCodec {
     private const val activeReservationFlag = 1
     private const val sourceDigestFlag = 2
     private const val knownFlags = activeReservationFlag or sourceDigestFlag
-    private const val maximumProvisioningBytes = 16 * 1024 * 1024
+    private const val maximumProvisioningBytes = 1024 * 1024
     private const val digestBytes = 32
     private const val spentHintKeyBytes = 48
     private const val relayBucketIdBytes = 16

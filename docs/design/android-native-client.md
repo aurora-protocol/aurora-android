@@ -136,13 +136,19 @@ to the tunnel runtime, which clears them after writing; partially decoded
 copies are cleared before a malformed result is rejected. Packet traffic is
 never expanded into JSON, base64, or immutable strings on this hot path.
 
-Provisioning reservation metadata is emitted by a Core JSON operation. Kotlin
-validates JSON framing and field sizes but does not parse the provisioning
-source or any Aurora network message. It does parse Core's private mobile-FFI
-reservation envelope (source length plus spent-hint list) so it can hash the
-opaque source and append durable spent-hint keys before invoking Core. The
-strict envelope parser mirrors Core's 16 MiB source and 64-key bounds. Core
-alone validates the source and selects the next wallet entry.
+Provisioning reservations use Core's binary operation 19. The private result is
+an exact three-byte big-endian provisioning length, 1..1 MiB opaque
+provisioning, 48-byte spent-hint key, 16-byte relay-bucket identifier, and
+positive signed 64-bit expiry. Kotlin rejects truncation, trailing bytes, and
+out-of-range fields; it clears the result envelope on every path, clears all
+partially copied fields on failure, and transfers only the three buffers owned
+by the reservation on success. No provisioning credential is expanded into JSON,
+base64, or immutable strings. Android still does not parse the provisioning
+source or any Aurora network message. It parses only Core's private request
+envelope (source length plus spent-hint list) so it can hash the opaque source
+and append durable spent-hint keys before invoking Core. That parser mirrors
+Core's separate 16 MiB wallet-source and 64-key bounds. Core alone validates the
+source and selects the next wallet entry.
 
 ## HTTP Boundary
 
@@ -166,8 +172,8 @@ allowing a second request to overlap a connection whose teardown is uncertain.
 - JVM tests cover byte clearing, trust-loader validation, encrypted store
   round-trips, issuer request validation, redirect rejection, response bounds,
   tunnel worker shutdown, non-blocking lifecycle teardown and its concurrency
-  ownership, canonical binary packet-list framing, packet-result ownership,
-  and the JNI bridge's operation and size contract.
+  ownership, canonical binary packet-list and provisioning-reservation framing,
+  result-buffer ownership, and the JNI bridge's operation and size contract.
 - Native build checks produce ELF libraries for both supported ABIs and verify
   the embedded clean-Core revision and Go/toolchain build settings, exact
   reviewed Core/JNI interface, dependency linkage, and 16 KiB LOAD-segment

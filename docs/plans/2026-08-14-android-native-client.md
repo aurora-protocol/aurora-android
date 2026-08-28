@@ -14,22 +14,26 @@ on Android API 26 and later.
   supported ABIs.
 - Do not include operational signed-seed roots in source control. Release
   packaging injects and validates the sealed root asset before signing.
-- Do not add an Android parser for Core's binary reservation envelope.
+- Parse only Core's bounded private mobile-FFI reservation envelope on Android;
+  never parse its opaque provisioning payload or Aurora network messages.
 
 ## Work Items
 
-### 1. Core Reservation JSON ABI
+### 1. Core Reservation Binary ABI
 
-Add one Core C ABI operation that accepts the existing native provisioning
-reservation request and returns a bounded JSON object containing opaque
-base64-encoded provisioning, spent-hint key, relay-bucket identifier, and
-access-hint expiry. Reuse Core's reservation logic and make the operation fail
-closed for malformed input, unavailable trust, reused hints, and invalid
-output fields.
+Use Core C ABI operation 19 for the existing native provisioning reservation
+request. Its bounded private result contains a three-byte provisioning length,
+opaque provisioning bytes, fixed-size spent-hint key and relay-bucket
+identifier, and a big-endian expiry. Reuse Core's reservation logic and make
+both sides fail closed for malformed input, unavailable trust, reused hints,
+invalid output fields, truncation, or trailing bytes. Clear the result envelope
+and all partial field copies on failure; transfer only reservation-owned byte
+arrays on success.
 
-Write tests before implementation for successful JSON output, one-shot
-reservation behavior, malformed input, and C ABI dispatch. Verify with focused
-tests, `go vet`, race tests, and both Android shared-library builds.
+Write tests before implementation for successful binary output, one-shot
+reservation behavior, malformed input, allocation-failure scrubbing, and C ABI
+dispatch. Verify with focused tests, `go vet`, race tests, and both Android
+shared-library builds.
 
 ### 2. Reproducible Android Build
 

@@ -27,27 +27,20 @@ different preinstalled NDK.
 
 ## Local verification
 
-Create the non-production trust fixture used by local and CI builds:
+Run every local gate CI runs, in order, with a single command:
 
 ```sh
-./scripts/write-test-native-trust-resource.sh
+./scripts/aurora-android-check.sh
 ```
 
-Record that fixture's explicit non-production digest, then run the same primary
-gates as CI:
-
-```sh
-AURORA_RELEASE_TRUST_SHA256=a35ee395e5aa78773b61ab8b2ef4f1a92564a6ccbabc44298b65551cf5106677
-export AURORA_RELEASE_TRUST_SHA256
-./gradlew --no-daemon \
-  :app:testDebugUnitTest \
-  :app:testReleaseUnitTest \
-  :app:lintDebug \
-  :app:lintRelease \
-  :app:assembleDebug \
-  :app:assembleRelease
-./scripts/verify-release-native-linkage.sh
-```
+The script creates the non-production trust fixture used by local and CI
+builds, runs the same Gradle verification tasks as CI (unit tests, lint, and
+debug/release assembly), and verifies the release package contents. It honors
+the same environment overrides as CI (`AURORA_CORE_DIR`,
+`AURORA_RELEASE_TRUST_SHA256`, `GOTOOLCHAIN`) and defaults to the pinned
+values, including the fixture's explicit non-production digest. The individual
+scripts under [`scripts/`](scripts/) remain available for running a single
+gate.
 
 The Gradle native tasks build the pinned Core checkout for both supported ABIs.
 They disable ambient Go workspaces and persistent Go settings, keep module

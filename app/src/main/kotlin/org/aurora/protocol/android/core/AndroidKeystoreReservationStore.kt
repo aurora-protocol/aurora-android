@@ -61,8 +61,8 @@ private class AndroidKeystoreReservationCipher : ReservationCipher {
             return ByteArray(envelopeHeaderBytes + ciphertext.size).also { envelope ->
                 envelope[0] = envelopeFormat
                 envelope[1] = iv.size.toByte()
-                System.arraycopy(iv, 0, envelope, envelopeHeaderBytes, iv.size)
-                System.arraycopy(ciphertext, 0, envelope, envelopeHeaderBytes + iv.size, ciphertext.size)
+                System.arraycopy(iv, 0, envelope, envelopeFormatBytes + ivLengthBytes, iv.size)
+                System.arraycopy(ciphertext, 0, envelope, envelopeHeaderBytes, ciphertext.size)
             }
         } finally {
             iv?.fill(0)
@@ -130,7 +130,9 @@ private class AndroidKeystoreReservationCipher : ReservationCipher {
         const val ivBytes = 12
         const val tagBits = 128
         const val tagBytes = tagBits / Byte.SIZE_BITS
-        const val envelopeHeaderBytes = 2 + ivBytes
+        const val envelopeFormatBytes = 1
+        const val ivLengthBytes = 1
+        const val envelopeHeaderBytes = envelopeFormatBytes + ivLengthBytes + ivBytes
         val associatedData = "aurora-reservation-store".toByteArray(Charsets.US_ASCII)
     }
 }

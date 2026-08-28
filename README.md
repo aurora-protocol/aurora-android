@@ -50,6 +50,20 @@ values, including the fixture's explicit non-production digest. The individual
 scripts under [`scripts/`](scripts/) remain available for running a single
 gate.
 
+The framework-bound surface that JVM tests cannot cover — the JNI bridge into
+libauroracore, the keystore-backed reservation store, and the tunnel device's
+real file descriptors — has instrumented tests under
+[`app/src/androidTest/`](app/src/androidTest/). With a device or emulator
+connected (`adb devices`), run them against the debug build:
+
+```sh
+./gradlew :app:connectedDebugAndroidTest
+```
+
+The run uses the same environment as a local build, including
+`AURORA_CORE_DIR` for the pinned Core checkout. The pipe-descriptor tunnel
+tests require API 33 or later and are skipped on older devices.
+
 The Gradle native tasks build the pinned Core checkout for both supported ABIs.
 They disable ambient Go workspaces and persistent Go settings, keep module
 resolution read-only, and fix the architecture and cgo toolchain inputs so a

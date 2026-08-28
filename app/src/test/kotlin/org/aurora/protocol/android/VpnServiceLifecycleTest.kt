@@ -47,6 +47,80 @@ class VpnServiceLifecycleTest {
     }
 
     @Test
+    fun `start, promotion, and stop publish tunnel status classifications`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val failures = ConcurrentLinkedQueue<Throwable>()
+        val channel = VpnTunnelStatus()
+        val observed = mutableListOf<TunnelStatus>()
+        channel.observe(observed::add)
+        val process = VpnProcessLifecycle(failures::add, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val session = CountingResource()
+        val runtime = CountingResource()
+        val generation = lifecycle.acceptedGeneration(41)
+
+        try {
+            assertEquals(TunnelStatus.CONNECTING, channel.status)
+
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            assertTrue(lifecycle.attachSession(generation, session))
+            assertTrue(lifecycle.promoteRuntime(generation, session, runtime))
+            assertEquals(TunnelStatus.CONNECTED, channel.status)
+
+            val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
+            assertEquals(TunnelStatus.IDLE, channel.status)
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertEquals(
+                listOf(TunnelStatus.CONNECTING, TunnelStatus.CONNECTED, TunnelStatus.IDLE),
+                observed,
+            )
+            assertTrue(failures.isEmpty())
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `failure stops publish failed while rejected and shared starts publish nothing`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val failures = ConcurrentLinkedQueue<Throwable>()
+        val channel = VpnTunnelStatus()
+        val observed = mutableListOf<TunnelStatus>()
+        channel.observe(observed::add)
+        val process = VpnProcessLifecycle(failures::add, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val other = process.acquire()
+        val generation = lifecycle.acceptedGeneration(52)
+
+        try {
+            assertEquals(VpnConnectionStart.Rejected, other.start(51))
+            assertEquals(VpnConnectionStart.Shared, lifecycle.start(53))
+            assertEquals(listOf(TunnelStatus.CONNECTING), observed)
+
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            val stop = lifecycle.stop(
+                expectedGeneration = generation,
+                failed = true,
+            ) as VpnConnectionStop.Started
+            assertEquals(TunnelStatus.FAILED, channel.status)
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertEquals(listOf(TunnelStatus.CONNECTING, TunnelStatus.FAILED), observed)
+            assertTrue(failures.isEmpty())
+        } finally {
+            other.release()
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `platform stop and callback return do not wait for a blocking resource close`() {
         val executor = Executors.newSingleThreadExecutor()
         val failures = ConcurrentLinkedQueue<Throwable>()

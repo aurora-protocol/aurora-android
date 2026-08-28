@@ -25,8 +25,11 @@ import org.aurora.protocol.android.core.NativeSessionController
 import org.aurora.protocol.android.core.NativeTunnelRuntime
 import org.aurora.protocol.android.core.TunnelPacketDevice
 
+internal val vpnTunnelStatus = VpnTunnelStatus()
+
 private val vpnProcessLifecycle = VpnProcessLifecycle(
     onTeardownFailure = { error -> AuroraLog.debug("tunnel resource cleanup", error) },
+    tunnelStatus = vpnTunnelStatus,
 )
 
 internal class VpnConnectionCommand(
@@ -113,6 +116,7 @@ class AuroraVpnService : VpnService() {
             stopTunnel(
                 stopService = true,
                 expectedGeneration = ownGeneration,
+                failed = true,
             )
         }
     }
@@ -149,6 +153,7 @@ class AuroraVpnService : VpnService() {
                 stopTunnel(
                     stopService = true,
                     expectedGeneration = ownGeneration,
+                    failed = true,
                 )
             }
             candidateRuntime = establishedRuntime
@@ -174,6 +179,7 @@ class AuroraVpnService : VpnService() {
             stopTunnel(
                 stopService = true,
                 expectedGeneration = ownGeneration,
+                failed = true,
             )
         }
     }
@@ -199,8 +205,9 @@ class AuroraVpnService : VpnService() {
         stopService: Boolean,
         expectedGeneration: Long? = null,
         serviceStartId: Int? = null,
+        failed: Boolean = false,
     ) {
-        when (val stop = lifecycle.stop(expectedGeneration, serviceStartId)) {
+        when (val stop = lifecycle.stop(expectedGeneration, serviceStartId, failed)) {
             VpnConnectionStop.Ignored -> return
             is VpnConnectionStop.AlreadyInProgress -> {
                 if (stopService && stop.serviceStartId != null) {

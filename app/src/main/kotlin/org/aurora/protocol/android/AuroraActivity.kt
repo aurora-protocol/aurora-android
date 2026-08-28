@@ -38,6 +38,8 @@ class AuroraActivity : Activity() {
     private lateinit var requestState: ConnectionRequestState
     private val importInputLock = Any()
     private var pendingImport: CharArray? = null
+    private var statusObserver: (() -> Unit)? = null
+    private var renderedTunnelStatus: TunnelStatus? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +52,27 @@ class AuroraActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(savedConnectionRequest, requestState.connectRequested)
         super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Catch up only when the classification changed since the last tunnel
+        // publication this screen rendered, so local request/import feedback
+        // shown while the tunnel stayed idle is not overwritten.
+        val current = vpnTunnelStatus.status
+        val rendered = renderedTunnelStatus
+        if (rendered != null && current != rendered) {
+            renderTunnelStatus(current)
+        }
+        statusObserver = vpnTunnelStatus.observe { update ->
+            runOnUiThread { renderTunnelStatus(update) }
+        }
+    }
+
+    override fun onPause() {
+        statusObserver?.invoke()
+        statusObserver = null
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -125,7 +148,7 @@ class AuroraActivity : Activity() {
                 if (requestState.connectRequested) {
                     R.string.status_waiting_for_permission
                 } else {
-                    R.string.status_ready
+                    tunnelStatusText(vpnTunnelStatus.status)
                 },
             )
         }
@@ -320,6 +343,11 @@ class AuroraActivity : Activity() {
         requestState.cancelConnectionRequest()
         status.setText(R.string.status_connection_failed)
         refreshControls()
+    }
+
+    private fun renderTunnelStatus(update: TunnelStatus) {
+        renderedTunnelStatus = update
+        status.setText(tunnelStatusText(update))
     }
 
     private fun refreshControls() {

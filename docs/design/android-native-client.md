@@ -108,6 +108,13 @@ packet contents.
    Runtime close is completion-bearing: if a packet worker already owns
    shutdown, every concurrent close joins that shutdown before teardown
    ownership can be released.
+8. The lifecycle owner publishes tunnel status classifications — connecting,
+   connected, failed, and idle — through a process-scoped observable channel
+   as a start is accepted, an established runtime is promoted, and a stop
+   begins; failure-originated stops publish the failed classification. The
+   activity observes the channel while resumed and renders only the latest
+   classification, so terminal outcomes replace transitional request states
+   and the UI never displays error material.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.

@@ -70,11 +70,12 @@ internal class VpnServiceLifecycle internal constructor(
     fun stop(
         expectedGeneration: Long? = null,
         serviceStartId: Int? = null,
+        failed: Boolean = false,
     ): VpnConnectionStop {
         return if (released.get()) {
             VpnConnectionStop.Ignored
         } else {
-            processLifecycle.stop(leaseId, expectedGeneration, serviceStartId)
+            processLifecycle.stop(leaseId, expectedGeneration, serviceStartId, failed)
         }
     }
 
@@ -102,6 +103,7 @@ internal class VpnProcessLifecycle(
     initialTeardownExecutor: ExecutorService = newVpnTeardownExecutor(),
     private val teardownExecutorFactory: () -> ExecutorService = ::newVpnTeardownExecutor,
     private val rejectionExecutor: Executor = newVpnRejectionExecutor(),
+    private val tunnelStatus: VpnTunnelStatus = VpnTunnelStatus(),
 ) {
     private val lock = Any()
     private var teardownExecutor = initialTeardownExecutor
@@ -139,6 +141,10 @@ internal class VpnProcessLifecycle(
             serviceStartId = serviceStartId,
         )
         VpnConnectionStart.Accepted(ownGeneration)
+    }.also { start ->
+        if (start is VpnConnectionStart.Accepted) {
+            tunnelStatus.publish(TunnelStatus.CONNECTING)
+        }
     }
 
     internal fun attachSession(
@@ -184,6 +190,10 @@ internal class VpnProcessLifecycle(
             connection.session = null
             connection.runtime = runtime
             true
+        }
+    }.also { promoted ->
+        if (promoted) {
+            tunnelStatus.publish(TunnelStatus.CONNECTED)
         }
     }
 
@@ -250,6 +260,7 @@ internal class VpnProcessLifecycle(
         leaseId: Long,
         expectedGeneration: Long?,
         serviceStartId: Int?,
+        failed: Boolean,
     ): VpnConnectionStop = synchronized(lock) {
         if (leaseId !in activeLeases) {
             return VpnConnectionStop.Ignored
@@ -276,6 +287,10 @@ internal class VpnProcessLifecycle(
             teardownId = teardown.id,
             serviceStartId = serviceStartId ?: connection.serviceStartId,
         )
+    }.also { stop ->
+        if (stop is VpnConnectionStop.Started) {
+            tunnelStatus.publish(if (failed) TunnelStatus.FAILED else TunnelStatus.IDLE)
+        }
     }
 
     internal fun finishLifecycleStop(leaseId: Long, teardownId: Long) = synchronized(lock) {

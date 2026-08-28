@@ -14,8 +14,10 @@
     <string name="status_import_failed">Could not import the provisioning code. Check the code and try again.</string>
     <string name="status_waiting_for_permission">Waiting for permission…</string>
     <string name="status_permission_request_failed">Could not complete the permission request. Try connecting again.</string>
-    <string name="status_connecting">VPN start requested</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_connected">VPN connected</string>
     <string name="status_connection_failed">Could not request a VPN connection. Try again.</string>
+    <string name="status_tunnel_failed">The VPN connection failed. Try again.</string>
     <string name="status_disconnect_requested">VPN stop requested</string>
     <string name="status_disconnect_failed">Could not request VPN disconnection. Try again.</string>
     <string name="status_vpn_permission_required">VPN permission is required to connect</string>

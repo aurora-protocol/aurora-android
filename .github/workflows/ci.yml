@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: aurora-protocol/aurora-core
-          ref: 63e65afc91d81ccfc0d367b8444b16df83cbc4d6
+          ref: b5d14e883024b8224908abfa094b46cd83a95546
           path: aurora-core
           persist-credentials: false
       - name: Verify aurora-core pin matches aurora-core.revision
@@ -60,7 +60,7 @@ jobs:
         env:
           AURORA_CORE_DIR: ${{ github.workspace }}/aurora-core
           # SHA-256 of the checked-in generator's non-production trust fixture.
-          AURORA_RELEASE_TRUST_SHA256: a35ee395e5aa78773b61ab8b2ef4f1a92564a6ccbabc44298b65551cf5106677
+          AURORA_RELEASE_TRUST_SHA256: 3dc6e04540dda6ce4ef828bc2d27ce9e451d956e06baf2622e07d005bfc9488b
           GOTOOLCHAIN: go1.26.6
           GOCACHE: ${{ github.workspace }}/.cache/go-build
         run: >-
@@ -74,7 +74,7 @@ jobs:
       - name: Verify release package contents
         env:
           AURORA_CORE_DIR: ${{ github.workspace }}/aurora-core
-          AURORA_RELEASE_TRUST_SHA256: a35ee395e5aa78773b61ab8b2ef4f1a92564a6ccbabc44298b65551cf5106677
+          AURORA_RELEASE_TRUST_SHA256: 3dc6e04540dda6ce4ef828bc2d27ce9e451d956e06baf2622e07d005bfc9488b
           GOTOOLCHAIN: go1.26.6
           GOCACHE: ${{ github.workspace }}/.cache/go-build
         run: ./scripts/verify-release-native-linkage.sh

@@ -67,12 +67,27 @@ class AuroraVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val command = vpnServiceCommand(intent?.action)
         val statusBeforeCommand = vpnTunnelStatus.publication
-        when (command) {
-            VpnServiceCommand.CONNECT -> startTunnel(startId)
-            VpnServiceCommand.DISCONNECT -> stopTunnel(stopService = true, serviceStartId = startId)
-            null -> stopSelfResult(startId)
+        val handled = when (command) {
+            VpnServiceCommand.CONNECT -> {
+                val requestId = intent?.getLongExtra(connectVpnRequestIdExtra, 0L)
+                if (vpnConnectRequestGate.claim(requestId)) {
+                    startTunnel(startId)
+                    true
+                } else {
+                    stopSelfResult(startId)
+                    false
+                }
+            }
+            VpnServiceCommand.DISCONNECT -> {
+                stopTunnel(stopService = true, serviceStartId = startId)
+                true
+            }
+            null -> {
+                stopSelfResult(startId)
+                false
+            }
         }
-        if (command != null) {
+        if (handled) {
             vpnTunnelStatus.publishCurrentIfUnchanged(statusBeforeCommand.revision)
         }
         return Service.START_NOT_STICKY
@@ -292,8 +307,12 @@ class AuroraVpnService : VpnService() {
     }
 
     companion object {
-        internal fun connect(context: Context) {
-            context.startForegroundService(Intent(context, AuroraVpnService::class.java).setAction(actionConnect))
+        internal fun connect(context: Context, requestId: Long) {
+            context.startForegroundService(
+                Intent(context, AuroraVpnService::class.java)
+                    .setAction(actionConnect)
+                    .putExtra(connectVpnRequestIdExtra, requestId),
+            )
         }
 
         internal fun disconnect(context: Context) {

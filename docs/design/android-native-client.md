@@ -138,9 +138,12 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
    current classification as an acknowledgement. If the service never handles
    the command, a monotonic ten-second deadline clears the pending UI lock and
    exposes an explicit retry rather than leaving the screen permanently busy.
-   These rules prevent both duplicate commands and stale process-restoration
-   state. Terminal outcomes replace transitional request states and the UI
-   never displays error material.
+   Connect commands also carry a process-local monotonic request ID. Timeout or
+   an explicit cancellation invalidates that ID, so a start delivered late by
+   Android cannot establish an unwanted tunnel; a later retry receives a newer
+   valid ID. These rules prevent duplicate and stale commands as well as stale
+   process-restoration state. Terminal outcomes replace transitional request
+   states and the UI never displays error material.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.

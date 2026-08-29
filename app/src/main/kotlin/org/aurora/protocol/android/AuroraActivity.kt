@@ -75,6 +75,13 @@ class AuroraActivity : Activity() {
             } else {
                 null
             },
+            restoredConnectRequestId = if (
+                savedInstanceState?.containsKey(savedVpnServiceConnectRequestId) == true
+            ) {
+                savedInstanceState.getLong(savedVpnServiceConnectRequestId)
+            } else {
+                null
+            },
             restoredProcessSessionId = savedInstanceState?.getString(savedVpnServiceProcessSession),
             currentStatusRevision = initialTunnelStatus.revision,
         )
@@ -90,11 +97,18 @@ class AuroraActivity : Activity() {
             outState.remove(savedVpnServiceCommand)
             outState.remove(savedVpnServiceCommandRevision)
             outState.remove(savedVpnServiceCommandTimeout)
+            outState.remove(savedVpnServiceConnectRequestId)
             outState.remove(savedVpnServiceProcessSession)
         } else {
             outState.putString(savedVpnServiceCommand, pendingCommand.command.name)
             outState.putLong(savedVpnServiceCommandRevision, pendingCommand.afterStatusRevision)
             outState.putLong(savedVpnServiceCommandTimeout, pendingCommand.timeoutAtUptimeMillis)
+            val connectRequestId = pendingCommand.connectRequestId
+            if (connectRequestId == null) {
+                outState.remove(savedVpnServiceConnectRequestId)
+            } else {
+                outState.putLong(savedVpnServiceConnectRequestId, connectRequestId)
+            }
             outState.putString(savedVpnServiceProcessSession, vpnServiceProcessSessionId)
         }
         super.onSaveInstanceState(outState)
@@ -414,17 +428,20 @@ class AuroraActivity : Activity() {
     }
 
     private fun startConnection() {
+        val requestId = vpnConnectRequestGate.issue()
         vpnServiceRequestTracker.begin(
             VpnServiceCommand.CONNECT,
             vpnTunnelStatus.publication.revision,
             SystemClock.uptimeMillis(),
+            connectRequestId = requestId,
         )
         schedulePendingVpnServiceReconciliation()
         refreshControls()
-        val failure = runVpnServiceRequest { AuroraVpnService.connect(this) }
+        val failure = runVpnServiceRequest { AuroraVpnService.connect(this, requestId) }
         if (failure == null) {
             showLocalStatus(R.string.status_connecting)
         } else {
+            vpnConnectRequestGate.invalidate(requestId)
             vpnServiceRequestTracker.clear()
             schedulePendingVpnServiceReconciliation()
             AuroraLog.debug("VPN service start", failure)
@@ -438,7 +455,11 @@ class AuroraActivity : Activity() {
             return
         }
         val currentStatus = vpnTunnelStatus.publication
+        val pendingConnectRequestId = vpnServiceRequestTracker.pending
+            ?.takeIf { it.command == VpnServiceCommand.CONNECT }
+            ?.connectRequestId
         requestState.cancelConnectionRequest()
+        pendingConnectRequestId?.let(vpnConnectRequestGate::invalidate)
         if (vpnServiceRequestTracker.clearIfAcknowledged(currentStatus)) {
             schedulePendingVpnServiceReconciliation()
         }
@@ -456,6 +477,7 @@ class AuroraActivity : Activity() {
             VpnServiceCommand.DISCONNECT,
             currentStatus.revision,
             SystemClock.uptimeMillis(),
+            connectRequestId = null,
         )
         schedulePendingVpnServiceReconciliation()
         refreshControls()
@@ -496,17 +518,18 @@ class AuroraActivity : Activity() {
             refreshControls()
             return
         }
-        val expiredCommand = vpnServiceRequestTracker.expireIfUnacknowledged(
+        val expiredRequest = vpnServiceRequestTracker.expireIfUnacknowledged(
             currentStatus = currentStatus,
             currentUptimeMillis = SystemClock.uptimeMillis(),
         )
-        if (expiredCommand == null) {
+        if (expiredRequest == null) {
             schedulePendingVpnServiceReconciliation()
             return
         }
+        expiredRequest.connectRequestId?.let(vpnConnectRequestGate::invalidate)
         schedulePendingVpnServiceReconciliation()
         showLocalStatus(
-            if (expiredCommand == VpnServiceCommand.CONNECT) {
+            if (expiredRequest.command == VpnServiceCommand.CONNECT) {
                 R.string.status_connection_unconfirmed
             } else {
                 R.string.status_disconnect_unconfirmed
@@ -617,6 +640,7 @@ class AuroraActivity : Activity() {
         const val savedVpnServiceCommand = "vpn-service-command"
         const val savedVpnServiceCommandRevision = "vpn-service-command-revision"
         const val savedVpnServiceCommandTimeout = "vpn-service-command-timeout"
+        const val savedVpnServiceConnectRequestId = "vpn-service-connect-request-id"
         const val savedVpnServiceProcessSession = "vpn-service-process-session"
     }
 }

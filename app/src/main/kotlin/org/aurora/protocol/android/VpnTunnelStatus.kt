@@ -5,6 +5,7 @@ internal enum class TunnelStatus {
     IDLE,
     CONNECTING,
     CONNECTED,
+    DISCONNECTING,
     FAILED,
 }
 
@@ -69,5 +70,6 @@ internal fun tunnelStatusText(status: TunnelStatus): Int = when (status) {
     TunnelStatus.IDLE -> R.string.status_ready
     TunnelStatus.CONNECTING -> R.string.status_connecting
     TunnelStatus.CONNECTED -> R.string.status_connected
+    TunnelStatus.DISCONNECTING -> R.string.status_disconnecting
     TunnelStatus.FAILED -> R.string.status_tunnel_failed
 }

@@ -15,12 +15,15 @@ internal fun mainScreenControls(
     tunnelStatus: TunnelStatus,
 ): MainScreenControls {
     val busy = importInProgress || connectRequested
-    val tunnelActive = tunnelStatus == TunnelStatus.CONNECTING || tunnelStatus == TunnelStatus.CONNECTED
+    val tunnelBusy = tunnelStatus == TunnelStatus.CONNECTING ||
+        tunnelStatus == TunnelStatus.CONNECTED ||
+        tunnelStatus == TunnelStatus.DISCONNECTING
     return MainScreenControls(
-        importInputEnabled = !busy && !tunnelActive,
-        importEnabled = !busy && !tunnelActive && hasProvisioningInput,
-        connectEnabled = !busy && !tunnelActive,
-        disconnectEnabled = !importInProgress && (connectRequested || tunnelActive),
-        showProgress = busy || tunnelStatus == TunnelStatus.CONNECTING,
+        importInputEnabled = !busy && !tunnelBusy,
+        importEnabled = !busy && !tunnelBusy && hasProvisioningInput,
+        connectEnabled = !busy && !tunnelBusy,
+        disconnectEnabled = !importInProgress &&
+            (connectRequested || tunnelStatus == TunnelStatus.CONNECTING || tunnelStatus == TunnelStatus.CONNECTED),
+        showProgress = busy || tunnelStatus == TunnelStatus.CONNECTING || tunnelStatus == TunnelStatus.DISCONNECTING,
     )
 }

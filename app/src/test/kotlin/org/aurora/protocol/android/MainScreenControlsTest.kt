@@ -92,4 +92,18 @@ class MainScreenControlsTest {
             mainScreenControls(false, false, true, TunnelStatus.FAILED),
         )
     }
+
+    @Test
+    fun `disconnecting tunnel stays busy without offering a duplicate stop`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = false,
+                importEnabled = false,
+                connectEnabled = false,
+                disconnectEnabled = false,
+                showProgress = true,
+            ),
+            mainScreenControls(false, false, true, TunnelStatus.DISCONNECTING),
+        )
+    }
 }

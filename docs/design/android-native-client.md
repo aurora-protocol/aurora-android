@@ -109,9 +109,12 @@ packet contents.
    shutdown, every concurrent close joins that shutdown before teardown
    ownership can be released.
 8. The lifecycle owner publishes tunnel status classifications — connecting,
-   connected, failed, and idle — through a process-scoped observable channel
-   as a start is accepted, an established runtime is promoted, and a stop
-   begins; failure-originated stops publish the failed classification. The
+   connected, disconnecting, failed, and idle — through a process-scoped
+   observable channel as a start is accepted, an established runtime is
+   promoted, and a stop begins. Disconnecting remains visible until resource,
+   connection-worker, and platform-lifecycle cleanup have all finished; only
+   then does a normal stop publish idle or a failure-originated stop publish
+   failed. The
    activity atomically subscribes and captures the current classification while
    resumed, so a transition cannot fall between its catch-up read and observer
    registration. It renders only the latest classification and derives the

@@ -16,6 +16,7 @@
     <string name="status_permission_request_failed">Could not complete the permission request. Try connecting again.</string>
     <string name="status_connecting">Connecting…</string>
     <string name="status_connected">VPN connected</string>
+    <string name="status_disconnecting">Disconnecting…</string>
     <string name="status_connection_failed">Could not request a VPN connection. Try again.</string>
     <string name="status_tunnel_failed">The VPN connection failed. Try again.</string>
     <string name="status_disconnect_requested">VPN stop requested</string>

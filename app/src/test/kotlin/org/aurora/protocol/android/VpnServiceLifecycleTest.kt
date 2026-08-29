@@ -68,12 +68,18 @@ class VpnServiceLifecycleTest {
             assertEquals(TunnelStatus.CONNECTED, channel.status)
 
             val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
-            assertEquals(TunnelStatus.IDLE, channel.status)
+            assertEquals(TunnelStatus.DISCONNECTING, channel.status)
             lifecycle.finishLifecycleStop(stop.teardownId)
             lifecycle.finishConnectionWork(generation)
+            assertTrue(awaitCondition { channel.status == TunnelStatus.IDLE })
 
             assertEquals(
-                listOf(TunnelStatus.CONNECTING, TunnelStatus.CONNECTED, TunnelStatus.IDLE),
+                listOf(
+                    TunnelStatus.CONNECTING,
+                    TunnelStatus.CONNECTED,
+                    TunnelStatus.DISCONNECTING,
+                    TunnelStatus.IDLE,
+                ),
                 observed,
             )
             assertTrue(failures.isEmpty())
@@ -106,11 +112,15 @@ class VpnServiceLifecycleTest {
                 expectedGeneration = generation,
                 failed = true,
             ) as VpnConnectionStop.Started
-            assertEquals(TunnelStatus.FAILED, channel.status)
+            assertEquals(TunnelStatus.DISCONNECTING, channel.status)
             lifecycle.finishLifecycleStop(stop.teardownId)
             lifecycle.finishConnectionWork(generation)
+            assertTrue(awaitCondition { channel.status == TunnelStatus.FAILED })
 
-            assertEquals(listOf(TunnelStatus.CONNECTING, TunnelStatus.FAILED), observed)
+            assertEquals(
+                listOf(TunnelStatus.CONNECTING, TunnelStatus.DISCONNECTING, TunnelStatus.FAILED),
+                observed,
+            )
             assertTrue(failures.isEmpty())
         } finally {
             other.release()

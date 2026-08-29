@@ -32,8 +32,8 @@ internal interface ReservationStore {
 
     fun load(): CoreReservation?
 
-    /** Atomically removes and returns the active reservation while retaining history. */
-    fun consume(): CoreReservation?
+    /** Atomically removes and returns an unexpired active reservation while retaining history. */
+    fun consume(nowUnix: Long): CoreReservation?
 
     /** Removes only the active reservation while retaining replay history. */
     fun clear()
@@ -155,12 +155,18 @@ internal class EncryptedReservationStore(
     }
 
     @Synchronized
-    override fun consume(): CoreReservation? {
+    override fun consume(nowUnix: Long): CoreReservation? {
         var state: ReservationStorageState? = null
         var reservation: CoreReservation? = null
         try {
+            require(nowUnix > 0) { "invalid consumption time" }
             state = loadState() ?: return null
             reservation = state.takeReservation() ?: return null
+            if (reservation.accessHintExpiryUnix <= nowUnix) {
+                // The decoded copy is cleared below, but without a write the
+                // persisted reservation and its replay history remain intact.
+                return null
+            }
             // This atomic ledger-only write is the commit point. The caller never
             // receives a reservation whose spent-hint history was not retained.
             writeState(state)

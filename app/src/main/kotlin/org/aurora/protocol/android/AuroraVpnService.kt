@@ -160,7 +160,9 @@ class AuroraVpnService : VpnService() {
                 return
             }
 
-            val reservation = (application as AuroraApplication).reservations.consume()
+            val reservation = (application as AuroraApplication).reservations.consume(
+                System.currentTimeMillis() / 1_000,
+            )
             if (!lifecycle.markProvisioningRequired(ownGeneration)) {
                 reservation?.close()
                 return

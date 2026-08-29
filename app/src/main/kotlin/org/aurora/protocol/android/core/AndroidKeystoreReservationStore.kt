@@ -34,7 +34,7 @@ internal class AndroidKeystoreReservationStore(context: Context) : ReservationSt
 
     override fun load(): CoreReservation? = store.load()
 
-    override fun consume(): CoreReservation? = store.consume()
+    override fun consume(nowUnix: Long): CoreReservation? = store.consume(nowUnix)
 
     override fun clear() = store.clear()
 

@@ -64,7 +64,7 @@ class EncryptedReservationStoreTest {
         val firstKey = ByteArray(48) { 0x31 }
         store.save(reservation(spentHintKey = firstKey, expiry = 500), digest, 100)
 
-        store.consume()?.close()
+        store.consume(100)?.close()
 
         assertNull(store.load())
         assertHistory(store, digest, 100, firstKey)
@@ -92,12 +92,12 @@ class EncryptedReservationStoreTest {
         val firstKey = ByteArray(48) { 0x51 }
         val secondKey = ByteArray(48) { 0x52 }
         store.save(reservation(spentHintKey = firstKey, expiry = 500), firstDigest, 100)
-        store.consume()?.close()
+        store.consume(100)?.close()
 
         assertHistory(store, firstDigest, 149, firstKey)
 
         store.save(reservation(spentHintKey = secondKey, expiry = 300), secondDigest, 200)
-        store.consume()?.close()
+        store.consume(200)?.close()
 
         assertTrue(store.spentHintKeys(firstDigest, 200).isEmpty())
         assertHistory(store, secondDigest, 200, secondKey)
@@ -112,7 +112,7 @@ class EncryptedReservationStoreTest {
         legacyPlaintext.fill(0)
         val store = EncryptedReservationStore(blobs, InvertingCipher)
 
-        store.consume()?.close()
+        store.consume(100)?.close()
 
         val migrated = requireNotNull(blobs.value).let(InvertingCipher::decrypt)
         try {
@@ -126,7 +126,7 @@ class EncryptedReservationStoreTest {
         assertHistory(store, newDigest, 100, legacyKey)
         val newKey = ByteArray(48) { 0x63 }
         store.save(reservation(spentHintKey = newKey, expiry = 600), newDigest, 100)
-        store.consume()?.close()
+        store.consume(100)?.close()
         assertHistory(store, newDigest, 100, legacyKey, newKey)
         assertTrue(store.spentHintKeys(ByteArray(32) { 0x64 }, 100).isEmpty())
     }
@@ -141,13 +141,36 @@ class EncryptedReservationStoreTest {
         blobs.writeFailure = IllegalStateException("atomic write failed")
 
         assertThrows(ReservationStorageException::class.java) {
-            store.consume()
+            store.consume(100)
         }
 
         blobs.writeFailure = null
         val stillActive = requireNotNull(store.load())
         try {
             assertArrayEquals(key, stillActive.spentHintKey)
+        } finally {
+            stillActive.close()
+        }
+        assertHistory(store, digest, 100, key)
+    }
+
+    @Test
+    fun expiredConsumeReturnsNothingWithoutRewritingOrRemovingTheActiveReservation() {
+        val digest = ByteArray(32) { 0x73 }
+        val blobs = MemoryBlobStore()
+        val store = EncryptedReservationStore(blobs, InvertingCipher)
+        val key = ByteArray(48) { 0x74 }
+        store.save(reservation(spentHintKey = key, expiry = 500), digest, 100)
+        val before = requireNotNull(blobs.value).copyOf()
+
+        assertNull(store.consume(500))
+
+        assertArrayEquals(before, blobs.value)
+        before.fill(0)
+        val stillActive = requireNotNull(store.load())
+        try {
+            assertArrayEquals(key, stillActive.spentHintKey)
+            assertEquals(500, stillActive.accessHintExpiryUnix)
         } finally {
             stillActive.close()
         }
@@ -203,7 +226,7 @@ class EncryptedReservationStoreTest {
             100,
             callerKeys + callerKeys.first(),
         )
-        store.consume()?.close()
+        store.consume(100)?.close()
         val overflow = reservation(spentHintKey = ByteArray(48) { 0x7f }, expiry = 500)
 
         assertThrows(ReservationStorageException::class.java) {

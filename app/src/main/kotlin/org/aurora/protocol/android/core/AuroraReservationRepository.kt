@@ -72,7 +72,10 @@ internal class AuroraReservationRepository(
     }
 
     @Synchronized
-    fun consume(): CoreReservation? = storage.consume()
+    fun consume(nowUnix: Long): CoreReservation? {
+        require(nowUnix > 0) { "invalid consumption time" }
+        return storage.consume(nowUnix)
+    }
 
     @Synchronized
     fun clear() {

@@ -88,6 +88,10 @@ an unexpired entry was present; an empty, expired, or unreadable store requires
 provisioning without implicitly consuming or removing that entry. The
 result is revision- and generation-gated so it cannot overwrite a newer tunnel
 lifecycle publication or an import/removal storage transition.
+Consumption repeats the wall-clock expiry check atomically with the storage
+operation. An entry that expires after startup is therefore never returned to
+the native session; it remains encrypted and unconsumed, while the lifecycle
+reports that fresh provisioning is required.
 Once the service consumes a one-shot reservation, every normal or failed
 terminal path records that fresh provisioning is required. The main screen
 then disables Connect and directs the user to import a new code; a successful

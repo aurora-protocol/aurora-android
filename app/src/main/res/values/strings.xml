@@ -7,8 +7,10 @@
     <string name="action_remove_provisioning">Remove stored provisioning</string>
     <string name="action_removing_provisioning">Removing stored provisioning…</string>
     <string name="action_connect">Connect</string>
+    <string name="action_connecting">Connecting…</string>
     <string name="action_waiting_for_permission">Waiting for permission…</string>
     <string name="action_disconnect">Disconnect</string>
+    <string name="action_disconnecting">Disconnecting…</string>
     <string name="status_label">Status</string>
     <string name="status_ready">Ready</string>
     <string name="status_importing">Importing provisioning code…</string>

@@ -129,9 +129,14 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
    idle-to-connecting-to-idle cycle. Generation-gated callbacks from an earlier
    screen lifecycle and publications superseded by newer local feedback cannot
    overwrite that feedback. The activity renders only the latest publication
-   and derives the connect/disconnect controls from it, preventing duplicate
-   starts while a tunnel is connecting or connected. Terminal outcomes replace
-   transitional request states and the UI never displays error material.
+   and derives the connect/disconnect controls from it. A dispatched service
+   command remains pending until a newer publication acknowledges lifecycle
+   progress, closing the gap in which permission state has cleared but the
+   service has not published connecting or disconnecting yet. The pending
+   command survives screen recreation only within the same process and status
+   revision, preventing both duplicate commands and stale process-restoration
+   state. Terminal outcomes replace transitional request states and the UI
+   never displays error material.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.

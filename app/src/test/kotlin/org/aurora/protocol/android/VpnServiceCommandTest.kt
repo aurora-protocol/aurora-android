@@ -1,8 +1,10 @@
 package org.aurora.protocol.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VpnServiceCommandTest {
@@ -29,6 +31,56 @@ class VpnServiceCommandTest {
 
         val failure = SecurityException("foreground service start denied")
         assertSame(failure, runVpnServiceRequest { throw failure })
+    }
+
+    @Test
+    fun `pending service request waits for a newer status publication`() {
+        val tracker = VpnServiceRequestTracker()
+        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 7)
+
+        assertFalse(tracker.clearIfSuperseded(currentStatusRevision = 7))
+        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 7), tracker.pending)
+        assertTrue(tracker.clearIfSuperseded(currentStatusRevision = 8))
+        assertNull(tracker.pending)
+    }
+
+    @Test
+    fun `new command replaces the prior request at the current revision`() {
+        val tracker = VpnServiceRequestTracker()
+        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 4)
+
+        tracker.begin(VpnServiceCommand.DISCONNECT, currentStatusRevision = 4)
+
+        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.DISCONNECT, 4), tracker.pending)
+    }
+
+    @Test
+    fun `restoration accepts only the same process session and status revision`() {
+        val restored = VpnServiceRequestTracker(
+            restoredCommand = VpnServiceCommand.CONNECT,
+            restoredAfterStatusRevision = 3,
+            restoredProcessSessionId = "same-process",
+            currentStatusRevision = 3,
+            currentProcessSessionId = "same-process",
+        )
+        val newerStatus = VpnServiceRequestTracker(
+            restoredCommand = VpnServiceCommand.CONNECT,
+            restoredAfterStatusRevision = 3,
+            restoredProcessSessionId = "same-process",
+            currentStatusRevision = 4,
+            currentProcessSessionId = "same-process",
+        )
+        val newProcess = VpnServiceRequestTracker(
+            restoredCommand = VpnServiceCommand.CONNECT,
+            restoredAfterStatusRevision = 3,
+            restoredProcessSessionId = "old-process",
+            currentStatusRevision = 3,
+            currentProcessSessionId = "new-process",
+        )
+
+        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 3), restored.pending)
+        assertNull(newerStatus.pending)
+        assertNull(newProcess.pending)
     }
 
     @Test

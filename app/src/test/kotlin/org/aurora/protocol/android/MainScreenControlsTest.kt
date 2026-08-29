@@ -19,6 +19,7 @@ class MainScreenControlsTest {
                 importInProgress = false,
                 storageOperationInProgress = false,
                 connectRequested = false,
+                pendingVpnServiceCommand = null,
                 hasProvisioningInput = false,
                 tunnelStatus = TunnelStatus.IDLE,
             ),
@@ -40,6 +41,7 @@ class MainScreenControlsTest {
                 importInProgress = false,
                 storageOperationInProgress = false,
                 connectRequested = false,
+                pendingVpnServiceCommand = null,
                 hasProvisioningInput = true,
                 tunnelStatus = TunnelStatus.IDLE,
             ),
@@ -57,10 +59,40 @@ class MainScreenControlsTest {
             showProgress = true,
         )
 
-        assertEquals(expected, mainScreenControls(true, false, false, true, TunnelStatus.IDLE))
+        assertEquals(expected, mainScreenControls(true, false, false, null, true, TunnelStatus.IDLE))
         assertEquals(
             expected.copy(disconnectEnabled = true),
-            mainScreenControls(false, false, true, true, TunnelStatus.IDLE),
+            mainScreenControls(false, false, true, null, true, TunnelStatus.IDLE),
+        )
+    }
+
+    @Test
+    fun `dispatched connect stays busy until the service publishes status`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = false,
+                importEnabled = false,
+                removeProvisioningEnabled = false,
+                connectEnabled = false,
+                disconnectEnabled = true,
+                showProgress = true,
+            ),
+            mainScreenControls(false, false, false, VpnServiceCommand.CONNECT, true, TunnelStatus.IDLE),
+        )
+    }
+
+    @Test
+    fun `dispatched disconnect blocks duplicate commands until status advances`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = false,
+                importEnabled = false,
+                removeProvisioningEnabled = false,
+                connectEnabled = false,
+                disconnectEnabled = false,
+                showProgress = true,
+            ),
+            mainScreenControls(false, false, false, VpnServiceCommand.DISCONNECT, true, TunnelStatus.CONNECTED),
         )
     }
 
@@ -77,11 +109,11 @@ class MainScreenControlsTest {
 
         assertEquals(
             expected.copy(showProgress = true),
-            mainScreenControls(false, false, false, true, TunnelStatus.CONNECTING),
+            mainScreenControls(false, false, false, null, true, TunnelStatus.CONNECTING),
         )
         assertEquals(
             expected,
-            mainScreenControls(false, false, false, true, TunnelStatus.CONNECTED),
+            mainScreenControls(false, false, false, null, true, TunnelStatus.CONNECTED),
         )
     }
 
@@ -96,7 +128,7 @@ class MainScreenControlsTest {
                 disconnectEnabled = false,
                 showProgress = false,
             ),
-            mainScreenControls(false, false, false, true, TunnelStatus.FAILED),
+            mainScreenControls(false, false, false, null, true, TunnelStatus.FAILED),
         )
     }
 
@@ -111,7 +143,7 @@ class MainScreenControlsTest {
                 disconnectEnabled = false,
                 showProgress = true,
             ),
-            mainScreenControls(false, false, false, true, TunnelStatus.DISCONNECTING),
+            mainScreenControls(false, false, false, null, true, TunnelStatus.DISCONNECTING),
         )
     }
 
@@ -126,7 +158,7 @@ class MainScreenControlsTest {
                 disconnectEnabled = false,
                 showProgress = true,
             ),
-            mainScreenControls(false, true, false, true, TunnelStatus.IDLE),
+            mainScreenControls(false, true, false, null, true, TunnelStatus.IDLE),
         )
     }
 }

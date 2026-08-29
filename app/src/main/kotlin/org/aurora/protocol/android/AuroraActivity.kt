@@ -45,6 +45,7 @@ class AuroraActivity : Activity() {
     private var statusObserver: (() -> Unit)? = null
     private var statusObserverGeneration = 0L
     private lateinit var tunnelStatusRenderState: TunnelStatusRenderState
+    private lateinit var vpnServiceRequestTracker: VpnServiceRequestTracker
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,12 +53,35 @@ class AuroraActivity : Activity() {
         requestState = ConnectionRequestState(savedInstanceState?.getBoolean(savedConnectionRequest) == true)
         val initialTunnelStatus = vpnTunnelStatus.publication
         tunnelStatusRenderState = TunnelStatusRenderState(initialTunnelStatus)
+        val restoredCommand = savedInstanceState?.getString(savedVpnServiceCommand)?.let { name ->
+            enumValues<VpnServiceCommand>().firstOrNull { it.name == name }
+        }
+        vpnServiceRequestTracker = VpnServiceRequestTracker(
+            restoredCommand = restoredCommand,
+            restoredAfterStatusRevision = if (savedInstanceState?.containsKey(savedVpnServiceCommandRevision) == true) {
+                savedInstanceState.getLong(savedVpnServiceCommandRevision)
+            } else {
+                null
+            },
+            restoredProcessSessionId = savedInstanceState?.getString(savedVpnServiceProcessSession),
+            currentStatusRevision = initialTunnelStatus.revision,
+        )
         setContentView(buildContent(initialTunnelStatus.status))
         refreshControls()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(savedConnectionRequest, requestState.connectRequested)
+        val pendingCommand = vpnServiceRequestTracker.pending
+        if (pendingCommand == null) {
+            outState.remove(savedVpnServiceCommand)
+            outState.remove(savedVpnServiceCommandRevision)
+            outState.remove(savedVpnServiceProcessSession)
+        } else {
+            outState.putString(savedVpnServiceCommand, pendingCommand.command.name)
+            outState.putLong(savedVpnServiceCommandRevision, pendingCommand.afterStatusRevision)
+            outState.putString(savedVpnServiceProcessSession, vpnServiceProcessSessionId)
+        }
         super.onSaveInstanceState(outState)
     }
 
@@ -154,10 +178,13 @@ class AuroraActivity : Activity() {
             id = View.generateViewId()
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
             setText(
-                if (requestState.connectRequested) {
-                    R.string.status_waiting_for_permission
-                } else {
-                    tunnelStatusText(initialTunnelStatus)
+                when {
+                    requestState.connectRequested -> R.string.status_waiting_for_permission
+                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.status_connecting
+                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT -> {
+                        R.string.status_disconnect_requested
+                    }
+                    else -> tunnelStatusText(initialTunnelStatus)
                 },
             )
         }
@@ -371,25 +398,47 @@ class AuroraActivity : Activity() {
     }
 
     private fun startConnection() {
+        vpnServiceRequestTracker.begin(VpnServiceCommand.CONNECT, vpnTunnelStatus.publication.revision)
+        refreshControls()
         val failure = runVpnServiceRequest { AuroraVpnService.connect(this) }
         if (failure == null) {
             showLocalStatus(R.string.status_connecting)
         } else {
+            vpnServiceRequestTracker.clear()
             AuroraLog.debug("VPN service start", failure)
             showLocalStatus(R.string.status_connection_failed)
         }
+        refreshControls()
     }
 
     private fun disconnect() {
+        if (!currentControls().disconnectEnabled) {
+            return
+        }
+        val currentStatus = vpnTunnelStatus.publication
         requestState.cancelConnectionRequest()
+        vpnServiceRequestTracker.clearIfSuperseded(currentStatus.revision)
+
+        val connectPending = vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT
+        val tunnelActive = currentStatus.status == TunnelStatus.CONNECTING ||
+            currentStatus.status == TunnelStatus.CONNECTED
+        if (!connectPending && !tunnelActive) {
+            showLocalStatus(tunnelStatusText(currentStatus.status))
+            refreshControls()
+            return
+        }
+
+        vpnServiceRequestTracker.begin(VpnServiceCommand.DISCONNECT, currentStatus.revision)
         refreshControls()
         val failure = runVpnServiceRequest { AuroraVpnService.disconnect(this) }
         if (failure == null) {
             showLocalStatus(R.string.status_disconnect_requested)
         } else {
+            vpnServiceRequestTracker.clear()
             AuroraLog.debug("VPN service stop", failure)
             showLocalStatus(R.string.status_disconnect_failed)
         }
+        refreshControls()
     }
 
     private fun failConnectionRequest(operation: String, error: RuntimeException) {
@@ -403,6 +452,7 @@ class AuroraActivity : Activity() {
         if (!tunnelStatusRenderState.consumeIfCurrent(update, vpnTunnelStatus.publication)) {
             return
         }
+        vpnServiceRequestTracker.clearIfSuperseded(update.revision)
         status.setText(tunnelStatusText(update.status))
         refreshControls()
     }
@@ -422,8 +472,21 @@ class AuroraActivity : Activity() {
             if (storageOperationInProgress) R.string.action_removing_provisioning else R.string.action_remove_provisioning,
         )
         connectButton.isEnabled = controls.connectEnabled
-        connectButton.setText(if (requestState.connectRequested) R.string.action_waiting_for_permission else R.string.action_connect)
+        connectButton.setText(
+            when {
+                requestState.connectRequested -> R.string.action_waiting_for_permission
+                vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.action_connecting
+                else -> R.string.action_connect
+            },
+        )
         disconnectButton.isEnabled = controls.disconnectEnabled
+        disconnectButton.setText(
+            if (vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT) {
+                R.string.action_disconnecting
+            } else {
+                R.string.action_disconnect
+            },
+        )
         progressIndicator.visibility = if (controls.showProgress) View.VISIBLE else View.GONE
     }
 
@@ -431,6 +494,7 @@ class AuroraActivity : Activity() {
         importInProgress = requestState.importInProgress,
         storageOperationInProgress = storageOperationInProgress,
         connectRequested = requestState.connectRequested,
+        pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
         hasProvisioningInput = importField.text.isNotEmpty(),
         tunnelStatus = vpnTunnelStatus.status,
     )
@@ -483,5 +547,8 @@ class AuroraActivity : Activity() {
         const val requestNotifications = 1
         const val requestVpnPermission = 2
         const val savedConnectionRequest = "connection-requested"
+        const val savedVpnServiceCommand = "vpn-service-command"
+        const val savedVpnServiceCommandRevision = "vpn-service-command-revision"
+        const val savedVpnServiceProcessSession = "vpn-service-process-session"
     }
 }

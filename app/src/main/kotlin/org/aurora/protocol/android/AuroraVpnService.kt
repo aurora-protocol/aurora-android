@@ -3,10 +3,12 @@ package org.aurora.protocol.android
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
@@ -251,7 +253,31 @@ class AuroraVpnService : VpnService() {
             .setSmallIcon(R.drawable.ic_aurora)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(getString(R.string.notification_active))
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    openAppRequestCode,
+                    Intent(this, AuroraActivity::class.java).addFlags(
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    ),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                ),
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_aurora),
+                    getString(R.string.action_disconnect),
+                    PendingIntent.getService(
+                        this,
+                        disconnectRequestCode,
+                        Intent(this, AuroraVpnService::class.java).setAction(actionDisconnect),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                    ),
+                ).build(),
+            )
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -273,6 +299,8 @@ class AuroraVpnService : VpnService() {
         const val actionDisconnect = disconnectVpnAction
         const val notificationChannel = "aurora-vpn"
         const val notificationId = 101
+        private const val openAppRequestCode = 102
+        private const val disconnectRequestCode = 103
         const val tunnelMtu = 1280
         const val ipv4Address = "10.77.0.2"
         const val ipv4PrefixLength = 32

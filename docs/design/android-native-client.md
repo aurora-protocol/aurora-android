@@ -81,7 +81,9 @@ packet contents.
 
 1. The UI asks the operating system for VPN consent.
 2. After consent, the service enters foreground state with an active, minimal
-   status notification.
+   status notification. Tapping the notification returns to Aurora, and its
+   immutable action can disconnect the tunnel without exposing a mutable
+   service intent to other applications.
 3. The service loads and configures the release-sealed trust roots, then
    reserves one provisioning entry through Core.
 4. Core returns opaque issuer work. Android verifies the endpoint shape,

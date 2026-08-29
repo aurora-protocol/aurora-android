@@ -13,6 +13,7 @@
     <string name="action_disconnecting">Disconnecting…</string>
     <string name="status_label">Status</string>
     <string name="status_ready">Ready</string>
+    <string name="status_checking_provisioning">Checking stored provisioning…</string>
     <string name="status_importing">Importing provisioning code…</string>
     <string name="status_import_succeeded">Provisioning code imported</string>
     <string name="status_import_failed">Could not import the provisioning code. Check the code and try again.</string>

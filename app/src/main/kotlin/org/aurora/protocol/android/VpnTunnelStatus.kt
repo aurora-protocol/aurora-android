@@ -3,6 +3,7 @@ package org.aurora.protocol.android
 /** Lifecycle classifications the service publishes and the UI may render. */
 internal enum class TunnelStatus {
     IDLE,
+    CHECKING_PROVISIONING,
     CONNECTING,
     CONNECTED,
     DISCONNECTING,
@@ -30,19 +31,29 @@ internal class VpnTunnelStatus {
     val publication: TunnelStatusPublication
         get() = synchronized(lock) { TunnelStatusPublication(current, revision) }
 
-    fun publish(update: TunnelStatus) {
+    fun publish(update: TunnelStatus): TunnelStatusPublication {
         val (published, targets) = synchronized(lock) {
             current = update
             val next = TunnelStatusPublication(update, ++revision)
             next to observers.toList()
         }
-        targets.forEach { observer ->
-            try {
-                observer(published)
-            } catch (_: Throwable) {
-                // Status observation must never break lifecycle publication.
+        notifyObservers(published, targets)
+        return published
+    }
+
+    /** Publishes [update] only while both the state and revision still match [expected]. */
+    fun publishIfCurrent(expected: TunnelStatusPublication, update: TunnelStatus): Boolean {
+        val publication = synchronized(lock) {
+            if (current != expected.status || revision != expected.revision) {
+                null
+            } else {
+                current = update
+                val next = TunnelStatusPublication(update, ++revision)
+                next to observers.toList()
             }
-        }
+        } ?: return false
+        notifyObservers(publication.first, publication.second)
+        return true
     }
 
     /** Publishes the current state as a command acknowledgement unless another transition won the race. */
@@ -55,14 +66,21 @@ internal class VpnTunnelStatus {
                 next to observers.toList()
             }
         } ?: return false
-        publication.second.forEach { observer ->
+        notifyObservers(publication.first, publication.second)
+        return true
+    }
+
+    private fun notifyObservers(
+        publication: TunnelStatusPublication,
+        targets: List<(TunnelStatusPublication) -> Unit>,
+    ) {
+        targets.forEach { observer ->
             try {
-                observer(publication.first)
+                observer(publication)
             } catch (_: Throwable) {
                 // Status observation must never break lifecycle publication.
             }
         }
-        return true
     }
 
     /** Registers [observer] for future publications; returns an unsubscribe action. */
@@ -133,6 +151,7 @@ internal class TunnelStatusRenderState(initial: TunnelStatusPublication) {
 
 internal fun tunnelStatusText(status: TunnelStatus): Int = when (status) {
     TunnelStatus.IDLE -> R.string.status_ready
+    TunnelStatus.CHECKING_PROVISIONING -> R.string.status_checking_provisioning
     TunnelStatus.CONNECTING -> R.string.status_connecting
     TunnelStatus.CONNECTED -> R.string.status_connected
     TunnelStatus.DISCONNECTING -> R.string.status_disconnecting

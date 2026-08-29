@@ -271,6 +271,9 @@ class AuroraActivity : Activity() {
     }
 
     private fun importProvisioning() {
+        if (!currentControls().importEnabled) {
+            return
+        }
         if (!requestState.beginImport()) {
             return
         }
@@ -287,6 +290,7 @@ class AuroraActivity : Activity() {
         synchronized(importInputLock) {
             pendingImport = encoded
         }
+        (application as AuroraApplication).provisioningAvailability.invalidate()
         showLocalStatus(R.string.status_importing)
         refreshControls()
         try {
@@ -384,6 +388,7 @@ class AuroraActivity : Activity() {
         if (!controls.removeProvisioningEnabled) {
             return
         }
+        (application as AuroraApplication).provisioningAvailability.invalidate()
         storageOperationInProgress = true
         showLocalStatus(R.string.status_removing_provisioning)
         refreshControls()

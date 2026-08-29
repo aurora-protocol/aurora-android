@@ -46,6 +46,42 @@ class AuroraReservationRepositoryTest {
     }
 
     @Test
+    fun usableAvailabilityCheckDoesNotConsumeStorageAndClearsItsDecryptedCopy() {
+        val storage = ConsumingStorage()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> throw AssertionError("not used") },
+            storage,
+        )
+
+        assertTrue(repository.hasUsableStoredReservation(122))
+
+        assertFalse(storage.cleared)
+        assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
+        assertArrayEquals(ByteArray(48), storage.lastLoadedSpentHintKey)
+        assertArrayEquals(ByteArray(16), storage.lastLoadedRelayBucketId)
+        repository.consume()?.use { reservation ->
+            assertArrayEquals(byteArrayOf(0x01, 0x02), reservation.provisioning)
+        }
+        assertTrue(storage.cleared)
+    }
+
+    @Test
+    fun expiredAvailabilityCheckFailsClosedWithoutConsumingStorage() {
+        val storage = ConsumingStorage()
+        val repository = AuroraReservationRepository(
+            NativeProvisioningReservationClient { _, _ -> throw AssertionError("not used") },
+            storage,
+        )
+
+        assertFalse(repository.hasUsableStoredReservation(123))
+
+        assertFalse(storage.cleared)
+        assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
+        assertArrayEquals(ByteArray(48), storage.lastLoadedSpentHintKey)
+        assertArrayEquals(ByteArray(16), storage.lastLoadedRelayBucketId)
+    }
+
+    @Test
     fun serializesOneTimeConsumptionAcrossConcurrentCallers() {
         val storage = CoordinatedStorage()
         val repository = AuroraReservationRepository(
@@ -454,6 +490,9 @@ class AuroraReservationRepositoryTest {
 
     private class ConsumingStorage : ReservationStore {
         var cleared = false
+        var lastLoadedProvisioning = ByteArray(0)
+        var lastLoadedSpentHintKey = ByteArray(0)
+        var lastLoadedRelayBucketId = ByteArray(0)
 
         override fun save(
             reservation: CoreReservation,
@@ -464,12 +503,18 @@ class AuroraReservationRepositoryTest {
 
         override fun spentHintKeys(sourceDigest: ByteArray, nowUnix: Long): List<ByteArray> = emptyList()
 
-        override fun load(): CoreReservation = CoreReservation(
-            provisioning = byteArrayOf(0x01, 0x02),
-            spentHintKey = ByteArray(48),
-            relayBucketId = ByteArray(16),
-            accessHintExpiryUnix = 123,
-        )
+        override fun load(): CoreReservation {
+            val reservation = CoreReservation(
+                provisioning = byteArrayOf(0x01, 0x02),
+                spentHintKey = ByteArray(48) { 0x03 },
+                relayBucketId = ByteArray(16) { 0x04 },
+                accessHintExpiryUnix = 123,
+            )
+            lastLoadedProvisioning = reservation.provisioning
+            lastLoadedSpentHintKey = reservation.spentHintKey
+            lastLoadedRelayBucketId = reservation.relayBucketId
+            return reservation
+        }
 
         override fun clear() {
             cleared = true

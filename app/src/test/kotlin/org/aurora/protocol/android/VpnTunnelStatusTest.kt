@@ -93,6 +93,28 @@ class VpnTunnelStatusTest {
     }
 
     @Test
+    fun `conditional publication succeeds only for the exact current publication`() {
+        val channel = VpnTunnelStatus()
+        val expected = channel.publication
+
+        assertTrue(channel.publishIfCurrent(expected, TunnelStatus.CHECKING_PROVISIONING))
+        assertFalse(channel.publishIfCurrent(expected, TunnelStatus.PROVISIONING_REQUIRED))
+
+        assertEquals(TunnelStatusPublication(TunnelStatus.CHECKING_PROVISIONING, 1), channel.publication)
+    }
+
+    @Test
+    fun `newer lifecycle publication wins over a stale conditional result`() {
+        val channel = VpnTunnelStatus()
+        val checking = channel.publish(TunnelStatus.CHECKING_PROVISIONING)
+
+        channel.publish(TunnelStatus.CONNECTING)
+
+        assertFalse(channel.publishIfCurrent(checking, TunnelStatus.IDLE))
+        assertEquals(TunnelStatusPublication(TunnelStatus.CONNECTING, 2), channel.publication)
+    }
+
+    @Test
     fun `revision distinguishes stale callbacks after an away and back transition`() {
         val channel = VpnTunnelStatus()
         val initial = channel.publication

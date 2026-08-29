@@ -81,6 +81,13 @@ The main screen exposes a confirmed removal action for the active stored
 reservation. It performs encrypted storage I/O off the UI thread, disables
 conflicting import and connection commands until completion, and deliberately
 uses `clear` rather than `purge` so local spent-hint history remains intact.
+At process start, the application reports that it is checking provisioning and
+performs a non-consuming encrypted-store load away from the UI thread. It
+immediately closes and clears the decrypted copy, then reports ready only when
+an unexpired entry was present; an empty, expired, or unreadable store requires
+provisioning without implicitly consuming or removing that entry. The
+result is revision- and generation-gated so it cannot overwrite a newer tunnel
+lifecycle publication or an import/removal storage transition.
 Once the service consumes a one-shot reservation, every normal or failed
 terminal path records that fresh provisioning is required. The main screen
 then disables Connect and directs the user to import a new code; a successful

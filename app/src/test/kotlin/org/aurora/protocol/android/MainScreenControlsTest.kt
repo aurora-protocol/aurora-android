@@ -118,6 +118,28 @@ class MainScreenControlsTest {
     }
 
     @Test
+    fun `provisioning availability check blocks commands and reports progress`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = false,
+                importEnabled = false,
+                removeProvisioningEnabled = false,
+                connectEnabled = false,
+                disconnectEnabled = false,
+                showProgress = true,
+            ),
+            mainScreenControls(
+                false,
+                false,
+                false,
+                null,
+                true,
+                TunnelStatus.CHECKING_PROVISIONING,
+            ),
+        )
+    }
+
+    @Test
     fun `failed tunnel returns controls to a retryable idle shape`() {
         assertEquals(
             MainScreenControls(

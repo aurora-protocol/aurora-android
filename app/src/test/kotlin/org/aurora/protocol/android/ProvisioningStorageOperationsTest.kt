@@ -69,4 +69,29 @@ class ProvisioningStorageOperationsTest {
         assertEquals(1, completionRuns)
         assertNull(operations.publication.operation)
     }
+
+    @Test
+    fun observerReceivesCurrentAndStopsAfterUnsubscribe() {
+        val operations = ProvisioningStorageOperations()
+        val updates = mutableListOf<ProvisioningStorageOperationPublication>()
+        val observation = operations.observeCurrent { update ->
+            updates += update
+        }
+
+        assertEquals(1, updates.size)
+        assertNull(updates[0].operation)
+        assertEquals(0L, updates[0].revision)
+
+        val lease = checkNotNull(operations.begin(ProvisioningStorageOperation.REMOVING))
+        assertEquals(2, updates.size)
+        assertEquals(ProvisioningStorageOperation.REMOVING, updates[1].operation)
+        assertEquals(1L, updates[1].revision)
+
+        observation.unsubscribe()
+        operations.complete(lease)
+        val leaseAfter = checkNotNull(operations.begin(ProvisioningStorageOperation.IMPORTING))
+        operations.complete(leaseAfter)
+
+        assertEquals(2, updates.size)
+    }
 }

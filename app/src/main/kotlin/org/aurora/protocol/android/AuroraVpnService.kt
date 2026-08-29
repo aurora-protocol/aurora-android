@@ -161,13 +161,17 @@ class AuroraVpnService : VpnService() {
             }
 
             val reservation = (application as AuroraApplication).reservations.consume()
-                ?: throw IllegalStateException("no stored provisioning reservation")
+            if (!lifecycle.markProvisioningRequired(ownGeneration)) {
+                reservation?.close()
+                return
+            }
+            val activeReservation = reservation ?: throw MissingProvisioningException()
             try {
-                createdSession.establish(reservation.provisioning) {
+                createdSession.establish(activeReservation.provisioning) {
                     device = establishTunnel()
                 }
             } finally {
-                reservation.close()
+                activeReservation.close()
             }
             val establishedDevice = device ?: throw IllegalStateException("VPN interface is unavailable")
             val establishedRuntime = NativeTunnelRuntime(ownedSession, establishedDevice) { error ->
@@ -201,7 +205,7 @@ class AuroraVpnService : VpnService() {
             stopTunnel(
                 stopService = true,
                 expectedGeneration = ownGeneration,
-                failed = true,
+                failed = error !is MissingProvisioningException,
             )
         }
     }
@@ -334,6 +338,8 @@ class AuroraVpnService : VpnService() {
         const val ipv6Dns = "fd77::1"
     }
 }
+
+private class MissingProvisioningException : IllegalStateException("no stored provisioning reservation")
 
 internal class CloseOnceNativePacketSession(
     private val delegate: NativePacketSession,

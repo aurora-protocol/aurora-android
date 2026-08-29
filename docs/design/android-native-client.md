@@ -81,6 +81,12 @@ The main screen exposes a confirmed removal action for the active stored
 reservation. It performs encrypted storage I/O off the UI thread, disables
 conflicting import and connection commands until completion, and deliberately
 uses `clear` rather than `purge` so local spent-hint history remains intact.
+Once the service consumes a one-shot reservation, every normal or failed
+terminal path records that fresh provisioning is required. The main screen
+then disables Connect and directs the user to import a new code; a successful
+import returns the screen to the ready classification. This requirement is
+carried by the process lifecycle owner even when consumption races with an
+already-detached connection teardown.
 
 ## VPN Lifecycle
 
@@ -116,13 +122,13 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
    shutdown, every concurrent close joins that shutdown before teardown
    ownership can be released.
 8. The lifecycle owner publishes tunnel status classifications — connecting,
-   connected, disconnecting, failed, and idle — through a process-scoped
-   observable channel as a start is accepted, an established runtime is
-   promoted, and a stop begins. Disconnecting remains visible until resource,
-   connection-worker, and platform-lifecycle cleanup have all finished; only
-   then does a normal stop publish idle or a failure-originated stop publish
-   failed. The
-   activity atomically subscribes and captures the current classification while
+   connected, disconnecting, failed, provisioning required, and idle — through
+   a process-scoped observable channel as a start is accepted, an established
+   runtime is promoted, and a stop begins. Disconnecting remains visible until
+   resource, connection-worker, and platform-lifecycle cleanup have all
+   finished; only then does the owner publish idle, failed, or the corresponding
+   provisioning-required terminal classification. The activity atomically
+   subscribes and captures the current classification while
    resumed, so a transition cannot fall between its catch-up read and observer
    registration. Every publication carries a process-local monotonic revision,
    so an old idle callback cannot become current again after an

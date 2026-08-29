@@ -323,6 +323,9 @@ class AuroraActivity : Activity() {
                     AuroraLog.debug("provisioning import", error)
                     R.string.status_import_failed
                 }
+                if (message == R.string.status_import_succeeded) {
+                    vpnTunnelStatus.publish(TunnelStatus.IDLE)
+                }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) {
                         return@runOnUiThread
@@ -346,6 +349,9 @@ class AuroraActivity : Activity() {
     }
 
     private fun connect() {
+        if (!currentControls().connectEnabled) {
+            return
+        }
         if (!requestState.beginConnectionRequest()) {
             return
         }
@@ -389,6 +395,9 @@ class AuroraActivity : Activity() {
                 } catch (error: Exception) {
                     AuroraLog.debug("provisioning removal", error)
                     R.string.status_remove_provisioning_failed
+                }
+                if (message == R.string.status_provisioning_removed) {
+                    vpnTunnelStatus.publish(TunnelStatus.PROVISIONING_REQUIRED)
                 }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) {

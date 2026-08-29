@@ -131,6 +131,56 @@ class VpnServiceLifecycleTest {
     }
 
     @Test
+    fun `normal stop requires a new provisioning entry after one-shot consumption`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val channel = VpnTunnelStatus()
+        val process = VpnProcessLifecycle({}, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val generation = lifecycle.acceptedGeneration(54)
+
+        try {
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            assertTrue(lifecycle.markProvisioningRequired(generation))
+            val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertTrue(awaitCondition { channel.status == TunnelStatus.PROVISIONING_REQUIRED })
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `late consumption mark upgrades an already detached failure outcome`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val channel = VpnTunnelStatus()
+        val process = VpnProcessLifecycle({}, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val generation = lifecycle.acceptedGeneration(55)
+
+        try {
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            val stop = lifecycle.stop(
+                expectedGeneration = generation,
+                failed = true,
+            ) as VpnConnectionStop.Started
+
+            assertFalse(lifecycle.markProvisioningRequired(generation))
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertTrue(awaitCondition { channel.status == TunnelStatus.FAILED_REQUIRES_PROVISIONING })
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `platform stop and callback return do not wait for a blocking resource close`() {
         val executor = Executors.newSingleThreadExecutor()
         val failures = ConcurrentLinkedQueue<Throwable>()

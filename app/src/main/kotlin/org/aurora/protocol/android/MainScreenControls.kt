@@ -23,11 +23,13 @@ internal fun mainScreenControls(
     val tunnelBusy = tunnelStatus == TunnelStatus.CONNECTING ||
         tunnelStatus == TunnelStatus.CONNECTED ||
         tunnelStatus == TunnelStatus.DISCONNECTING
+    val provisioningRequired = tunnelStatus == TunnelStatus.PROVISIONING_REQUIRED ||
+        tunnelStatus == TunnelStatus.FAILED_REQUIRES_PROVISIONING
     return MainScreenControls(
         importInputEnabled = !busy && !tunnelBusy,
         importEnabled = !busy && !tunnelBusy && hasProvisioningInput,
-        removeProvisioningEnabled = !busy && !tunnelBusy,
-        connectEnabled = !busy && !tunnelBusy,
+        removeProvisioningEnabled = !busy && !tunnelBusy && !provisioningRequired,
+        connectEnabled = !busy && !tunnelBusy && !provisioningRequired,
         disconnectEnabled = !importInProgress && !storageOperationInProgress && !disconnectPending &&
             (connectPending || tunnelStatus == TunnelStatus.CONNECTING || tunnelStatus == TunnelStatus.CONNECTED),
         showProgress = busy || tunnelStatus == TunnelStatus.CONNECTING || tunnelStatus == TunnelStatus.DISCONNECTING,

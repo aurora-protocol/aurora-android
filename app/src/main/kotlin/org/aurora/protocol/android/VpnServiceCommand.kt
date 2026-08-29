@@ -126,7 +126,9 @@ internal class VpnServiceRequestTracker(
         return command == VpnServiceCommand.CONNECT ||
             currentStatus.status == TunnelStatus.DISCONNECTING ||
             currentStatus.status == TunnelStatus.IDLE ||
-            currentStatus.status == TunnelStatus.FAILED
+            currentStatus.status == TunnelStatus.FAILED ||
+            currentStatus.status == TunnelStatus.PROVISIONING_REQUIRED ||
+            currentStatus.status == TunnelStatus.FAILED_REQUIRES_PROVISIONING
     }
 }
 

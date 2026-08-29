@@ -55,6 +55,11 @@ internal class VpnServiceLifecycle internal constructor(
             processLifecycle.promoteRuntime(leaseId, connectionGeneration, session, runtime)
     }
 
+    /** Marks the one-shot reservation unavailable; returns whether establishment may continue. */
+    fun markProvisioningRequired(connectionGeneration: Long): Boolean {
+        return processLifecycle.markProvisioningRequired(leaseId, connectionGeneration)
+    }
+
     fun beginConnectionWork(connectionGeneration: Long): Boolean {
         return processLifecycle.beginConnectionWork(leaseId, connectionGeneration)
     }
@@ -191,6 +196,21 @@ internal class VpnProcessLifecycle(
         }
     }
 
+    internal fun markProvisioningRequired(leaseId: Long, connectionGeneration: Long): Boolean = synchronized(lock) {
+        activeConnection?.takeIf {
+            it.leaseId == leaseId && it.generation == connectionGeneration
+        }?.let { connection ->
+            connection.provisioningRequired = true
+            return true
+        }
+        activeTeardown?.takeIf {
+            it.leaseId == leaseId && it.connectionGeneration == connectionGeneration
+        }?.let { teardown ->
+            teardown.terminalStatus = teardown.terminalStatus.requiringProvisioning()
+        }
+        false
+    }
+
     internal fun beginConnectionWork(leaseId: Long, connectionGeneration: Long): Boolean = synchronized(lock) {
         activeConnection?.takeIf {
             it.leaseId == leaseId && it.generation == connectionGeneration
@@ -279,7 +299,7 @@ internal class VpnProcessLifecycle(
         val teardown = detachConnection(
             connection,
             lifecycleComplete = false,
-            terminalStatus = if (failed) TunnelStatus.FAILED else TunnelStatus.IDLE,
+            terminalStatus = terminalTunnelStatus(failed, connection.provisioningRequired),
         )
         tunnelStatus.publish(TunnelStatus.DISCONNECTING)
         VpnConnectionStop.Started(
@@ -303,7 +323,7 @@ internal class VpnProcessLifecycle(
             detachConnection(
                 connection,
                 lifecycleComplete = true,
-                terminalStatus = TunnelStatus.IDLE,
+                terminalStatus = terminalTunnelStatus(failed = false, connection.provisioningRequired),
             )
             tunnelStatus.publish(TunnelStatus.DISCONNECTING)
         }
@@ -420,6 +440,7 @@ internal class VpnProcessLifecycle(
         var connectionWorkComplete: Boolean = false,
         var session: AutoCloseable? = null,
         var runtime: AutoCloseable? = null,
+        var provisioningRequired: Boolean = false,
     )
 
     private class ActiveTeardown(
@@ -429,9 +450,23 @@ internal class VpnProcessLifecycle(
         var connectionWorkStarted: Boolean,
         var connectionWorkComplete: Boolean,
         var lifecycleComplete: Boolean,
-        val terminalStatus: TunnelStatus,
+        var terminalStatus: TunnelStatus,
         var resourceCleanupComplete: Boolean = false,
     )
+}
+
+private fun terminalTunnelStatus(failed: Boolean, provisioningRequired: Boolean): TunnelStatus = when {
+    failed && provisioningRequired -> TunnelStatus.FAILED_REQUIRES_PROVISIONING
+    failed -> TunnelStatus.FAILED
+    provisioningRequired -> TunnelStatus.PROVISIONING_REQUIRED
+    else -> TunnelStatus.IDLE
+}
+
+private fun TunnelStatus.requiringProvisioning(): TunnelStatus = when (this) {
+    TunnelStatus.FAILED, TunnelStatus.FAILED_REQUIRES_PROVISIONING -> {
+        TunnelStatus.FAILED_REQUIRES_PROVISIONING
+    }
+    else -> TunnelStatus.PROVISIONING_REQUIRED
 }
 
 private fun newVpnTeardownExecutor(): ExecutorService = Executors.newSingleThreadExecutor { runnable ->

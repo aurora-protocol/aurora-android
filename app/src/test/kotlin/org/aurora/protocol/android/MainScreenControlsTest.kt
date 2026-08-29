@@ -133,6 +133,41 @@ class MainScreenControlsTest {
     }
 
     @Test
+    fun `consumed one-shot provisioning blocks connect while allowing a fresh import`() {
+        val expected = MainScreenControls(
+            importInputEnabled = true,
+            importEnabled = true,
+            removeProvisioningEnabled = false,
+            connectEnabled = false,
+            disconnectEnabled = false,
+            showProgress = false,
+        )
+
+        assertEquals(
+            expected,
+            mainScreenControls(
+                false,
+                false,
+                false,
+                null,
+                true,
+                TunnelStatus.PROVISIONING_REQUIRED,
+            ),
+        )
+        assertEquals(
+            expected,
+            mainScreenControls(
+                false,
+                false,
+                false,
+                null,
+                true,
+                TunnelStatus.FAILED_REQUIRES_PROVISIONING,
+            ),
+        )
+    }
+
+    @Test
     fun `disconnecting tunnel stays busy without offering a duplicate stop`() {
         assertEquals(
             MainScreenControls(

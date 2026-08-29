@@ -14,6 +14,10 @@ internal class ProvisioningAvailabilityRestorer(
     private val lock = Any()
     private var generation = 0L
     private var observedMainScreenResume = false
+    private var knownExpiryUnix: Long? = null
+
+    val knownReservationExpiryUnix: Long?
+        get() = synchronized(lock) { knownExpiryUnix }
 
     fun start() {
         val probe = synchronized(lock) {
@@ -66,13 +70,13 @@ internal class ProvisioningAvailabilityRestorer(
                     storedReservationAvailability(currentUnixTime())
                 } catch (error: Exception) {
                     onFailure(error)
-                    StoredReservationAvailability.MISSING
+                    StoredReservationAvailability.Missing
                 }
                 complete(probe, availability)
             }
         } catch (error: RuntimeException) {
             onFailure(error)
-            complete(probe, StoredReservationAvailability.MISSING)
+            complete(probe, StoredReservationAvailability.Missing)
         }
     }
 
@@ -83,18 +87,53 @@ internal class ProvisioningAvailabilityRestorer(
         }
     }
 
+    /** Records a completed store replacement before publishing its ready state. */
+    fun recordImportedReservation(expiryUnix: Long) {
+        require(expiryUnix > 0) { "invalid reservation expiry" }
+        synchronized(lock) {
+            ++generation
+            knownExpiryUnix = expiryUnix
+            tunnelStatus.publish(TunnelStatus.IDLE)
+        }
+    }
+
+    /** Clears retained expiry metadata before publishing successful removal. */
+    fun recordProvisioningRemoved() {
+        synchronized(lock) {
+            ++generation
+            knownExpiryUnix = null
+            tunnelStatus.publish(TunnelStatus.PROVISIONING_REQUIRED)
+        }
+    }
+
+    /** Expires only the same stored entry while it remains available for a retry. */
+    fun expireKnownReservation(expiryUnix: Long) {
+        synchronized(lock) {
+            if (knownExpiryUnix != expiryUnix || currentUnixTime() < expiryUnix) {
+                return
+            }
+            val current = tunnelStatus.publication
+            if (current.status != TunnelStatus.IDLE && current.status != TunnelStatus.FAILED) {
+                return
+            }
+            ++generation
+            tunnelStatus.publishIfCurrent(current, TunnelStatus.PROVISIONING_EXPIRED)
+        }
+    }
+
     private fun complete(probe: AvailabilityProbe, availability: StoredReservationAvailability) {
         synchronized(lock) {
             if (generation != probe.generation) {
                 return
             }
             ++generation
+            knownExpiryUnix = (availability as? StoredReservationAvailability.Available)?.expiryUnix
             tunnelStatus.publishIfCurrent(
                 probe.expectedStatus,
                 when (availability) {
-                    StoredReservationAvailability.AVAILABLE -> probe.availableStatus
-                    StoredReservationAvailability.MISSING -> TunnelStatus.PROVISIONING_REQUIRED
-                    StoredReservationAvailability.EXPIRED -> TunnelStatus.PROVISIONING_EXPIRED
+                    is StoredReservationAvailability.Available -> probe.availableStatus
+                    StoredReservationAvailability.Missing -> TunnelStatus.PROVISIONING_REQUIRED
+                    StoredReservationAvailability.Expired -> TunnelStatus.PROVISIONING_EXPIRED
                 },
             )
         }

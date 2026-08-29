@@ -9,7 +9,7 @@ internal class AuroraReservationRepository(
 ) {
     private val reservationInProgress = AtomicBoolean(false)
 
-    fun reserveAndPersist(request: ByteArray, issuedAtUnix: Long) {
+    fun reserveAndPersist(request: ByteArray, issuedAtUnix: Long): Long {
         if (!reservationInProgress.compareAndSet(false, true)) {
             request.fill(0)
             throw IllegalStateException("provisioning reservation is already in progress")
@@ -20,6 +20,7 @@ internal class AuroraReservationRepository(
         var persistedSpentHintKeys: List<ByteArray> = emptyList()
         var augmentedRequest: ByteArray? = null
         var reservation: CoreReservation? = null
+        var persistedExpiryUnix: Long? = null
         try {
             synchronized(this) {
                 // This check occurs after acquiring the repository monitor so a
@@ -47,6 +48,7 @@ internal class AuroraReservationRepository(
                     "Core returned a persisted reservation"
                 }
                 storage.save(reserved, digest, issuedAtUnix, callerSpentHintKeys)
+                persistedExpiryUnix = reserved.accessHintExpiryUnix
                 reservation = null
             }
         } finally {
@@ -59,6 +61,7 @@ internal class AuroraReservationRepository(
             request.fill(0)
             reservationInProgress.set(false)
         }
+        return requireNotNull(persistedExpiryUnix)
     }
 
     @Synchronized
@@ -70,11 +73,11 @@ internal class AuroraReservationRepository(
         require(nowUnix > 0) { "invalid availability time" }
         return storage.load()?.use { reservation ->
             if (reservation.accessHintExpiryUnix > nowUnix) {
-                StoredReservationAvailability.AVAILABLE
+                StoredReservationAvailability.Available(reservation.accessHintExpiryUnix)
             } else {
-                StoredReservationAvailability.EXPIRED
+                StoredReservationAvailability.Expired
             }
-        } ?: StoredReservationAvailability.MISSING
+        } ?: StoredReservationAvailability.Missing
     }
 
     @Synchronized
@@ -94,8 +97,14 @@ internal class AuroraReservationRepository(
     }
 }
 
-internal enum class StoredReservationAvailability {
-    AVAILABLE,
-    MISSING,
-    EXPIRED,
+internal sealed interface StoredReservationAvailability {
+    data class Available(val expiryUnix: Long) : StoredReservationAvailability {
+        init {
+            require(expiryUnix > 0) { "invalid reservation expiry" }
+        }
+    }
+
+    data object Missing : StoredReservationAvailability
+
+    data object Expired : StoredReservationAvailability
 }

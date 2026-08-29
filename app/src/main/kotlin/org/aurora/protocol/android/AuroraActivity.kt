@@ -47,10 +47,19 @@ class AuroraActivity : Activity() {
     private var storageOperationInProgress = false
     private var statusObserver: (() -> Unit)? = null
     private var statusObserverGeneration = 0L
+    private var screenResumed = false
     private lateinit var tunnelStatusRenderState: TunnelStatusRenderState
     private lateinit var vpnServiceRequestTracker: VpnServiceRequestTracker
     private val vpnServiceRequestHandler = Handler(Looper.getMainLooper())
     private val reconcileVpnServiceRequest = Runnable { reconcilePendingVpnServiceRequest() }
+    private val provisioningExpiryMonitor = ProvisioningExpiryMonitor(
+        currentTimeMillis = System::currentTimeMillis,
+        schedule = { action, delayMillis -> vpnServiceRequestHandler.postDelayed(action, delayMillis) },
+        cancel = vpnServiceRequestHandler::removeCallbacks,
+        onExpired = { expiryUnix ->
+            (application as AuroraApplication).provisioningAvailability.expireKnownReservation(expiryUnix)
+        },
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -128,6 +137,7 @@ class AuroraActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        screenResumed = true
         val generation = ++statusObserverGeneration
         val observation = vpnTunnelStatus.observeCurrentPublication { update ->
             runOnUiThread {
@@ -149,9 +159,12 @@ class AuroraActivity : Activity() {
         (application as AuroraApplication).provisioningAvailability.onMainScreenResumed(
             refreshAllowed = mayRefreshProvisioning,
         )
+        refreshProvisioningExpiryMonitor()
     }
 
     override fun onPause() {
+        screenResumed = false
+        provisioningExpiryMonitor.stop()
         ++statusObserverGeneration
         statusObserver?.invoke()
         statusObserver = null
@@ -160,6 +173,7 @@ class AuroraActivity : Activity() {
 
     override fun onDestroy() {
         vpnServiceRequestHandler.removeCallbacks(reconcileVpnServiceRequest)
+        provisioningExpiryMonitor.stop()
         worker.shutdownNow()
         synchronized(importInputLock) {
             pendingImport?.fill('\u0000')
@@ -316,6 +330,7 @@ class AuroraActivity : Activity() {
         refreshControls()
         try {
             worker.execute {
+                var importedExpiryUnix: Long? = null
                 val message = try {
                     val ownsInput = synchronized(importInputLock) {
                         if (pendingImport !== encoded) {
@@ -334,7 +349,7 @@ class AuroraActivity : Activity() {
                         if (Thread.currentThread().isInterrupted) {
                             return@execute
                         }
-                        (application as AuroraApplication).reservations.reserveAndPersist(
+                        importedExpiryUnix = (application as AuroraApplication).reservations.reserveAndPersist(
                             request,
                             System.currentTimeMillis() / 1_000,
                         )
@@ -348,8 +363,8 @@ class AuroraActivity : Activity() {
                     AuroraLog.debug("provisioning import", error)
                     R.string.status_import_failed
                 }
-                if (message == R.string.status_import_succeeded) {
-                    vpnTunnelStatus.publish(TunnelStatus.IDLE)
+                importedExpiryUnix?.let {
+                    (application as AuroraApplication).provisioningAvailability.recordImportedReservation(it)
                 }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) {
@@ -423,7 +438,7 @@ class AuroraActivity : Activity() {
                     R.string.status_remove_provisioning_failed
                 }
                 if (message == R.string.status_provisioning_removed) {
-                    vpnTunnelStatus.publish(TunnelStatus.PROVISIONING_REQUIRED)
+                    (application as AuroraApplication).provisioningAvailability.recordProvisioningRemoved()
                 }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) {
@@ -613,6 +628,25 @@ class AuroraActivity : Activity() {
             },
         )
         progressIndicator.visibility = if (controls.showProgress) View.VISIBLE else View.GONE
+        refreshProvisioningExpiryMonitor()
+    }
+
+    private fun refreshProvisioningExpiryMonitor() {
+        val tunnelStatus = vpnTunnelStatus.status
+        val monitorAllowed = screenResumed &&
+            provisioningRefreshAllowed(
+                importInProgress = requestState.importInProgress,
+                storageOperationInProgress = storageOperationInProgress,
+                connectRequested = requestState.connectRequested,
+                pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
+            ) &&
+            (tunnelStatus == TunnelStatus.IDLE || tunnelStatus == TunnelStatus.FAILED)
+        val expiryUnix = if (monitorAllowed) {
+            (application as AuroraApplication).provisioningAvailability.knownReservationExpiryUnix
+        } else {
+            null
+        }
+        provisioningExpiryMonitor.update(expiryUnix)
     }
 
     private fun currentControls(): MainScreenControls = mainScreenControls(

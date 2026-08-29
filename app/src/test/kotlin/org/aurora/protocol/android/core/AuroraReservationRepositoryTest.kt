@@ -22,8 +22,9 @@ class AuroraReservationRepositoryTest {
         val storage = RecordingStorage()
         val repository = AuroraReservationRepository(core, storage)
 
-        repository.reserveAndPersist(reservationRequest(byteArrayOf(0x01)), 122)
+        val expiryUnix = repository.reserveAndPersist(reservationRequest(byteArrayOf(0x01)), 122)
 
+        assertEquals(123L, expiryUnix)
         assertArrayEquals(byteArrayOf(0x01, 0x02), storage.provisioning)
         assertArrayEquals(ByteArray(responsePayload.size), responsePayload)
     }
@@ -53,7 +54,10 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        assertEquals(StoredReservationAvailability.AVAILABLE, repository.storedReservationAvailability(122))
+        assertEquals(
+            StoredReservationAvailability.Available(123),
+            repository.storedReservationAvailability(122),
+        )
 
         assertFalse(storage.cleared)
         assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
@@ -73,7 +77,7 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        assertEquals(StoredReservationAvailability.EXPIRED, repository.storedReservationAvailability(123))
+        assertEquals(StoredReservationAvailability.Expired, repository.storedReservationAvailability(123))
 
         assertFalse(storage.cleared)
         assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)

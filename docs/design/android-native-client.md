@@ -96,7 +96,16 @@ during backgrounding immediately disables Connect. The resumed check uses an
 atomic status transition plus the same revision and generation gates, so it
 cannot overwrite newer connection or storage work. Pending permission, service
 command, import, or removal work suppresses the check, preventing its status
-publication from being mistaken for lifecycle-command acknowledgement.
+publication from being mistaken for lifecycle-command acknowledgement. The
+non-consuming check retains only the entry's non-sensitive expiry timestamp;
+the decrypted reservation is still closed and cleared immediately. While a
+ready or retryable-failed main screen remains foregrounded, a lifecycle-bound
+wall-clock monitor disables Connect at that expiry boundary. Its bounded
+rechecks notice wall-clock shifts, pause with the screen, and ask the process
+restorer to compare the same stored expiry again before any status transition.
+Successful import and removal update that expiry metadata atomically with their
+ready or provisioning-required publication, so an older timer cannot expire a
+replacement entry.
 Consumption repeats the wall-clock expiry check atomically with the storage
 operation. An entry that expires after startup is therefore never returned to
 the native session; it remains encrypted and unconsumed, while the lifecycle

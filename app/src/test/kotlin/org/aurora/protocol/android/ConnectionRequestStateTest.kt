@@ -47,4 +47,40 @@ class ConnectionRequestStateTest {
         assertFalse(state.beginImport())
         assertTrue(state.consumeConnectionRequest())
     }
+
+    @Test
+    fun restoresPermissionStageWorkOnlyInTheSameProcessSession() {
+        assertTrue(
+            restoreConnectionRequest(
+                requested = true,
+                restoredProcessSessionId = "process-a",
+                currentProcessSessionId = "process-a",
+            ),
+        )
+        assertFalse(
+            restoreConnectionRequest(
+                requested = true,
+                restoredProcessSessionId = "process-a",
+                currentProcessSessionId = "process-b",
+            ),
+        )
+    }
+
+    @Test
+    fun rejectsIncompleteOrInactiveConnectionRestoration() {
+        assertFalse(
+            restoreConnectionRequest(
+                requested = true,
+                restoredProcessSessionId = null,
+                currentProcessSessionId = "process-a",
+            ),
+        )
+        assertFalse(
+            restoreConnectionRequest(
+                requested = false,
+                restoredProcessSessionId = "process-a",
+                currentProcessSessionId = "process-a",
+            ),
+        )
+    }
 }

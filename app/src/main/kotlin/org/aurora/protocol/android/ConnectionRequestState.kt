@@ -38,3 +38,10 @@ internal class ConnectionRequestState(initialConnectRequested: Boolean = false) 
         return true
     }
 }
+
+/** Restores permission-stage work only while its process-local callbacks can still arrive. */
+internal fun restoreConnectionRequest(
+    requested: Boolean,
+    restoredProcessSessionId: String?,
+    currentProcessSessionId: String,
+): Boolean = requested && restoredProcessSessionId == currentProcessSessionId

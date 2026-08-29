@@ -55,7 +55,13 @@ class AuroraActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        requestState = ConnectionRequestState(savedInstanceState?.getBoolean(savedConnectionRequest) == true)
+        requestState = ConnectionRequestState(
+            restoreConnectionRequest(
+                requested = savedInstanceState?.getBoolean(savedConnectionRequest) == true,
+                restoredProcessSessionId = savedInstanceState?.getString(savedConnectionRequestProcessSession),
+                currentProcessSessionId = vpnServiceProcessSessionId,
+            ),
+        )
         val initialTunnelStatus = vpnTunnelStatus.publication
         tunnelStatusRenderState = TunnelStatusRenderState(initialTunnelStatus)
         val restoredCommand = savedInstanceState?.getString(savedVpnServiceCommand)?.let { name ->
@@ -91,7 +97,13 @@ class AuroraActivity : Activity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean(savedConnectionRequest, requestState.connectRequested)
+        if (requestState.connectRequested) {
+            outState.putBoolean(savedConnectionRequest, true)
+            outState.putString(savedConnectionRequestProcessSession, vpnServiceProcessSessionId)
+        } else {
+            outState.remove(savedConnectionRequest)
+            outState.remove(savedConnectionRequestProcessSession)
+        }
         val pendingCommand = vpnServiceRequestTracker.pending
         if (pendingCommand == null) {
             outState.remove(savedVpnServiceCommand)
@@ -651,6 +663,7 @@ class AuroraActivity : Activity() {
         const val requestNotifications = 1
         const val requestVpnPermission = 2
         const val savedConnectionRequest = "connection-requested"
+        const val savedConnectionRequestProcessSession = "connection-request-process-session"
         const val savedVpnServiceCommand = "vpn-service-command"
         const val savedVpnServiceCommandRevision = "vpn-service-command-revision"
         const val savedVpnServiceCommandTimeout = "vpn-service-command-timeout"

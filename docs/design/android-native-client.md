@@ -149,9 +149,12 @@ already-detached connection teardown.
    and derives the connect/disconnect controls from it. A dispatched service
    command remains pending until a newer publication acknowledges lifecycle
    progress, closing the gap in which permission state has cleared but the
-   service has not published connecting or disconnecting yet. The pending
-   command survives screen recreation only within the same process and status
-   revision. A command that produces no lifecycle transition republishes the
+   service has not published connecting or disconnecting yet. Permission- and
+   VPN-consent-stage connection work, as well as a pending service command,
+   survives screen recreation only within the same process; the command also
+   requires the same status revision. Restored task state from an earlier
+   process cannot retain a connection lock or authorize a stale consent result.
+   A command that produces no lifecycle transition republishes the
    current classification as an acknowledgement. If the service never handles
    the command, a monotonic ten-second deadline clears the pending UI lock and
    exposes an explicit retry rather than leaving the screen permanently busy.

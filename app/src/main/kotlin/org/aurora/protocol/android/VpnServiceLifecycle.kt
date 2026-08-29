@@ -57,7 +57,20 @@ internal class VpnServiceLifecycle internal constructor(
 
     /** Marks the one-shot reservation unavailable; returns whether establishment may continue. */
     fun markProvisioningRequired(connectionGeneration: Long): Boolean {
-        return processLifecycle.markProvisioningRequired(leaseId, connectionGeneration)
+        return processLifecycle.markProvisioningUnavailable(
+            leaseId,
+            connectionGeneration,
+            TunnelStatus.PROVISIONING_REQUIRED,
+        )
+    }
+
+    /** Marks an expired reservation retained in storage; returns whether establishment may continue. */
+    fun markProvisioningExpired(connectionGeneration: Long): Boolean {
+        return processLifecycle.markProvisioningUnavailable(
+            leaseId,
+            connectionGeneration,
+            TunnelStatus.PROVISIONING_EXPIRED,
+        )
     }
 
     fun beginConnectionWork(connectionGeneration: Long): Boolean {
@@ -196,17 +209,25 @@ internal class VpnProcessLifecycle(
         }
     }
 
-    internal fun markProvisioningRequired(leaseId: Long, connectionGeneration: Long): Boolean = synchronized(lock) {
+    internal fun markProvisioningUnavailable(
+        leaseId: Long,
+        connectionGeneration: Long,
+        unavailableStatus: TunnelStatus,
+    ): Boolean = synchronized(lock) {
+        require(
+            unavailableStatus == TunnelStatus.PROVISIONING_REQUIRED ||
+                unavailableStatus == TunnelStatus.PROVISIONING_EXPIRED,
+        ) { "invalid provisioning terminal status" }
         activeConnection?.takeIf {
             it.leaseId == leaseId && it.generation == connectionGeneration
         }?.let { connection ->
-            connection.provisioningRequired = true
+            connection.provisioningTerminalStatus = unavailableStatus
             return true
         }
         activeTeardown?.takeIf {
             it.leaseId == leaseId && it.connectionGeneration == connectionGeneration
         }?.let { teardown ->
-            teardown.terminalStatus = teardown.terminalStatus.requiringProvisioning()
+            teardown.terminalStatus = teardown.terminalStatus.withProvisioningUnavailable(unavailableStatus)
         }
         false
     }
@@ -299,7 +320,7 @@ internal class VpnProcessLifecycle(
         val teardown = detachConnection(
             connection,
             lifecycleComplete = false,
-            terminalStatus = terminalTunnelStatus(failed, connection.provisioningRequired),
+            terminalStatus = terminalTunnelStatus(failed, connection.provisioningTerminalStatus),
         )
         tunnelStatus.publish(TunnelStatus.DISCONNECTING)
         VpnConnectionStop.Started(
@@ -323,7 +344,7 @@ internal class VpnProcessLifecycle(
             detachConnection(
                 connection,
                 lifecycleComplete = true,
-                terminalStatus = terminalTunnelStatus(failed = false, connection.provisioningRequired),
+                terminalStatus = terminalTunnelStatus(failed = false, connection.provisioningTerminalStatus),
             )
             tunnelStatus.publish(TunnelStatus.DISCONNECTING)
         }
@@ -440,7 +461,7 @@ internal class VpnProcessLifecycle(
         var connectionWorkComplete: Boolean = false,
         var session: AutoCloseable? = null,
         var runtime: AutoCloseable? = null,
-        var provisioningRequired: Boolean = false,
+        var provisioningTerminalStatus: TunnelStatus? = null,
     )
 
     private class ActiveTeardown(
@@ -455,15 +476,17 @@ internal class VpnProcessLifecycle(
     )
 }
 
-private fun terminalTunnelStatus(failed: Boolean, provisioningRequired: Boolean): TunnelStatus = when {
-    failed && provisioningRequired -> TunnelStatus.FAILED_REQUIRES_PROVISIONING
+private fun terminalTunnelStatus(failed: Boolean, provisioningTerminalStatus: TunnelStatus?): TunnelStatus = when {
+    provisioningTerminalStatus == TunnelStatus.PROVISIONING_EXPIRED -> TunnelStatus.PROVISIONING_EXPIRED
+    failed && provisioningTerminalStatus != null -> TunnelStatus.FAILED_REQUIRES_PROVISIONING
     failed -> TunnelStatus.FAILED
-    provisioningRequired -> TunnelStatus.PROVISIONING_REQUIRED
+    provisioningTerminalStatus != null -> TunnelStatus.PROVISIONING_REQUIRED
     else -> TunnelStatus.IDLE
 }
 
-private fun TunnelStatus.requiringProvisioning(): TunnelStatus = when (this) {
-    TunnelStatus.FAILED, TunnelStatus.FAILED_REQUIRES_PROVISIONING -> {
+private fun TunnelStatus.withProvisioningUnavailable(unavailableStatus: TunnelStatus): TunnelStatus = when {
+    unavailableStatus == TunnelStatus.PROVISIONING_EXPIRED -> TunnelStatus.PROVISIONING_EXPIRED
+    this == TunnelStatus.FAILED || this == TunnelStatus.FAILED_REQUIRES_PROVISIONING -> {
         TunnelStatus.FAILED_REQUIRES_PROVISIONING
     }
     else -> TunnelStatus.PROVISIONING_REQUIRED

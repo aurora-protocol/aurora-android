@@ -9,6 +9,7 @@ internal enum class TunnelStatus {
     DISCONNECTING,
     FAILED,
     PROVISIONING_REQUIRED,
+    PROVISIONING_EXPIRED,
     FAILED_REQUIRES_PROVISIONING,
 }
 
@@ -157,5 +158,6 @@ internal fun tunnelStatusText(status: TunnelStatus): Int = when (status) {
     TunnelStatus.DISCONNECTING -> R.string.status_disconnecting
     TunnelStatus.FAILED -> R.string.status_tunnel_failed
     TunnelStatus.PROVISIONING_REQUIRED -> R.string.status_provisioning_required
+    TunnelStatus.PROVISIONING_EXPIRED -> R.string.status_provisioning_expired
     TunnelStatus.FAILED_REQUIRES_PROVISIONING -> R.string.status_tunnel_failed_reimport
 }

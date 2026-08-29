@@ -128,6 +128,7 @@ internal class VpnServiceRequestTracker(
             currentStatus.status == TunnelStatus.IDLE ||
             currentStatus.status == TunnelStatus.FAILED ||
             currentStatus.status == TunnelStatus.PROVISIONING_REQUIRED ||
+            currentStatus.status == TunnelStatus.PROVISIONING_EXPIRED ||
             currentStatus.status == TunnelStatus.FAILED_REQUIRES_PROVISIONING
     }
 }

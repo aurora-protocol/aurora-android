@@ -64,15 +64,21 @@ internal class AuroraReservationRepository(
     @Synchronized
     fun load(): CoreReservation? = storage.load()
 
-    /** Checks for an unexpired active entry without consuming it and clears the decrypted copy immediately. */
+    /** Classifies the active entry without consuming it and clears the decrypted copy immediately. */
     @Synchronized
-    fun hasUsableStoredReservation(nowUnix: Long): Boolean {
+    fun storedReservationAvailability(nowUnix: Long): StoredReservationAvailability {
         require(nowUnix > 0) { "invalid availability time" }
-        return storage.load()?.use { reservation -> reservation.accessHintExpiryUnix > nowUnix } ?: false
+        return storage.load()?.use { reservation ->
+            if (reservation.accessHintExpiryUnix > nowUnix) {
+                StoredReservationAvailability.AVAILABLE
+            } else {
+                StoredReservationAvailability.EXPIRED
+            }
+        } ?: StoredReservationAvailability.MISSING
     }
 
     @Synchronized
-    fun consume(nowUnix: Long): CoreReservation? {
+    fun consume(nowUnix: Long): ReservationConsumption {
         require(nowUnix > 0) { "invalid consumption time" }
         return storage.consume(nowUnix)
     }
@@ -86,4 +92,10 @@ internal class AuroraReservationRepository(
     fun purge() {
         storage.purge()
     }
+}
+
+internal enum class StoredReservationAvailability {
+    AVAILABLE,
+    MISSING,
+    EXPIRED,
 }

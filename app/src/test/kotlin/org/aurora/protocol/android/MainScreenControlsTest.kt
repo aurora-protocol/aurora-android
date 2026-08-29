@@ -190,6 +190,28 @@ class MainScreenControlsTest {
     }
 
     @Test
+    fun `expired stored provisioning blocks connect while allowing import and removal`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = true,
+                importEnabled = true,
+                removeProvisioningEnabled = true,
+                connectEnabled = false,
+                disconnectEnabled = false,
+                showProgress = false,
+            ),
+            mainScreenControls(
+                false,
+                false,
+                false,
+                null,
+                true,
+                TunnelStatus.PROVISIONING_EXPIRED,
+            ),
+        )
+    }
+
+    @Test
     fun `disconnecting tunnel stays busy without offering a duplicate stop`() {
         assertEquals(
             MainScreenControls(

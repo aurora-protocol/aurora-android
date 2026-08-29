@@ -120,6 +120,24 @@ class VpnServiceCommandTest {
     }
 
     @Test
+    fun `expired-provisioning terminal status acknowledges disconnect`() {
+        val tracker = VpnServiceRequestTracker()
+        tracker.begin(
+            VpnServiceCommand.DISCONNECT,
+            currentStatusRevision = 7,
+            currentUptimeMillis = 100,
+            connectRequestId = null,
+        )
+
+        assertTrue(
+            tracker.clearIfAcknowledged(
+                TunnelStatusPublication(TunnelStatus.PROVISIONING_EXPIRED, 8),
+            ),
+        )
+        assertNull(tracker.pending)
+    }
+
+    @Test
     fun `new command replaces the prior request at the current revision`() {
         val tracker = VpnServiceRequestTracker()
         tracker.begin(

@@ -23,7 +23,7 @@ class AuroraApplication : Application() {
         )
         provisioningAvailability = ProvisioningAvailabilityRestorer(
             tunnelStatus = vpnTunnelStatus,
-            hasUsableStoredReservation = reservations::hasUsableStoredReservation,
+            storedReservationAvailability = reservations::storedReservationAvailability,
             currentUnixTime = { System.currentTimeMillis() / 1_000 },
             executor = provisioningAvailabilityExecutor,
             onFailure = { error -> AuroraLog.debug("provisioning availability", error) },

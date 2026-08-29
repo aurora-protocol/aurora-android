@@ -5,6 +5,7 @@ import java.util.concurrent.RejectedExecutionException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.aurora.protocol.android.core.StoredReservationAvailability
 
 class ProvisioningAvailabilityRestorerTest {
     @Test
@@ -16,7 +17,7 @@ class ProvisioningAvailabilityRestorerTest {
         val restorer = restorer(channel, executor) { nowUnix ->
             ++checks
             checkedAt = nowUnix
-            true
+            StoredReservationAvailability.AVAILABLE
         }
 
         restorer.start()
@@ -33,7 +34,7 @@ class ProvisioningAvailabilityRestorerTest {
     @Test
     fun `empty storage restores provisioning required status`() {
         val channel = VpnTunnelStatus()
-        val restorer = restorer(channel, Executor(Runnable::run)) { false }
+        val restorer = restorer(channel, Executor(Runnable::run)) { StoredReservationAvailability.MISSING }
 
         restorer.start()
 
@@ -41,10 +42,20 @@ class ProvisioningAvailabilityRestorerTest {
     }
 
     @Test
+    fun `expired storage restores a removable expired status`() {
+        val channel = VpnTunnelStatus()
+        val restorer = restorer(channel, Executor(Runnable::run)) { StoredReservationAvailability.EXPIRED }
+
+        restorer.start()
+
+        assertEquals(TunnelStatus.PROVISIONING_EXPIRED, channel.status)
+    }
+
+    @Test
     fun `newer lifecycle transition rejects an older availability result`() {
         val channel = VpnTunnelStatus()
         val executor = DeferredExecutor()
-        val restorer = restorer(channel, executor) { true }
+        val restorer = restorer(channel, executor) { StoredReservationAvailability.AVAILABLE }
         restorer.start()
 
         channel.publish(TunnelStatus.CONNECTING)
@@ -57,7 +68,7 @@ class ProvisioningAvailabilityRestorerTest {
     fun `storage mutation invalidates an availability result before it can publish`() {
         val channel = VpnTunnelStatus()
         val executor = DeferredExecutor()
-        val restorer = restorer(channel, executor) { true }
+        val restorer = restorer(channel, executor) { StoredReservationAvailability.AVAILABLE }
         restorer.start()
 
         restorer.invalidate()
@@ -73,7 +84,7 @@ class ProvisioningAvailabilityRestorerTest {
         val observed = mutableListOf<Throwable>()
         val restorer = ProvisioningAvailabilityRestorer(
             tunnelStatus = channel,
-            hasUsableStoredReservation = { throw failure },
+            storedReservationAvailability = { throw failure },
             currentUnixTime = { nowUnix },
             executor = Executor(Runnable::run),
             onFailure = observed::add,
@@ -92,7 +103,7 @@ class ProvisioningAvailabilityRestorerTest {
         val observed = mutableListOf<Throwable>()
         val restorer = ProvisioningAvailabilityRestorer(
             tunnelStatus = channel,
-            hasUsableStoredReservation = { throw AssertionError("must not run") },
+            storedReservationAvailability = { throw AssertionError("must not run") },
             currentUnixTime = { nowUnix },
             executor = Executor { throw failure },
             onFailure = observed::add,
@@ -107,10 +118,10 @@ class ProvisioningAvailabilityRestorerTest {
     private fun restorer(
         channel: VpnTunnelStatus,
         executor: Executor,
-        check: (Long) -> Boolean,
+        check: (Long) -> StoredReservationAvailability,
     ): ProvisioningAvailabilityRestorer = ProvisioningAvailabilityRestorer(
         tunnelStatus = channel,
-        hasUsableStoredReservation = check,
+        storedReservationAvailability = check,
         currentUnixTime = { nowUnix },
         executor = executor,
         onFailure = { throw AssertionError("unexpected failure", it) },

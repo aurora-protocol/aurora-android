@@ -64,7 +64,7 @@ class EncryptedReservationStoreTest {
         val firstKey = ByteArray(48) { 0x31 }
         store.save(reservation(spentHintKey = firstKey, expiry = 500), digest, 100)
 
-        store.consume(100)?.close()
+        store.consumeAvailable(100).close()
 
         assertNull(store.load())
         assertHistory(store, digest, 100, firstKey)
@@ -92,12 +92,12 @@ class EncryptedReservationStoreTest {
         val firstKey = ByteArray(48) { 0x51 }
         val secondKey = ByteArray(48) { 0x52 }
         store.save(reservation(spentHintKey = firstKey, expiry = 500), firstDigest, 100)
-        store.consume(100)?.close()
+        store.consumeAvailable(100).close()
 
         assertHistory(store, firstDigest, 149, firstKey)
 
         store.save(reservation(spentHintKey = secondKey, expiry = 300), secondDigest, 200)
-        store.consume(200)?.close()
+        store.consumeAvailable(200).close()
 
         assertTrue(store.spentHintKeys(firstDigest, 200).isEmpty())
         assertHistory(store, secondDigest, 200, secondKey)
@@ -112,7 +112,7 @@ class EncryptedReservationStoreTest {
         legacyPlaintext.fill(0)
         val store = EncryptedReservationStore(blobs, InvertingCipher)
 
-        store.consume(100)?.close()
+        store.consumeAvailable(100).close()
 
         val migrated = requireNotNull(blobs.value).let(InvertingCipher::decrypt)
         try {
@@ -126,7 +126,7 @@ class EncryptedReservationStoreTest {
         assertHistory(store, newDigest, 100, legacyKey)
         val newKey = ByteArray(48) { 0x63 }
         store.save(reservation(spentHintKey = newKey, expiry = 600), newDigest, 100)
-        store.consume(100)?.close()
+        store.consumeAvailable(100).close()
         assertHistory(store, newDigest, 100, legacyKey, newKey)
         assertTrue(store.spentHintKeys(ByteArray(32) { 0x64 }, 100).isEmpty())
     }
@@ -163,7 +163,7 @@ class EncryptedReservationStoreTest {
         store.save(reservation(spentHintKey = key, expiry = 500), digest, 100)
         val before = requireNotNull(blobs.value).copyOf()
 
-        assertNull(store.consume(500))
+        assertEquals(ReservationConsumption.Expired, store.consume(500))
 
         assertArrayEquals(before, blobs.value)
         before.fill(0)
@@ -226,7 +226,7 @@ class EncryptedReservationStoreTest {
             100,
             callerKeys + callerKeys.first(),
         )
-        store.consume(100)?.close()
+        store.consumeAvailable(100).close()
         val overflow = reservation(spentHintKey = ByteArray(48) { 0x7f }, expiry = 500)
 
         assertThrows(ReservationStorageException::class.java) {
@@ -356,4 +356,12 @@ class EncryptedReservationStoreTest {
             value = null
         }
     }
+
+    private fun ReservationStore.consumeAvailable(nowUnix: Long): CoreReservation =
+        when (val consumption = consume(nowUnix)) {
+            is ReservationConsumption.Available -> consumption.reservation
+            ReservationConsumption.Missing, ReservationConsumption.Expired -> {
+                throw AssertionError("expected available reservation, got $consumption")
+            }
+        }
 }

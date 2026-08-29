@@ -31,6 +31,7 @@
     <string name="status_connection_unconfirmed">The VPN service did not confirm the connection request. Try again.</string>
     <string name="status_tunnel_failed">The VPN connection failed. Try again.</string>
     <string name="status_provisioning_required">Import a provisioning code before connecting</string>
+    <string name="status_provisioning_expired">Stored provisioning expired. Import a new code or remove it.</string>
     <string name="status_tunnel_failed_reimport">The VPN connection failed. Import a new provisioning code to try again.</string>
     <string name="status_disconnect_requested">VPN stop requested</string>
     <string name="status_disconnect_failed">Could not request VPN disconnection. Try again.</string>

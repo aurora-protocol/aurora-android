@@ -84,14 +84,15 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
 At process start, the application reports that it is checking provisioning and
 performs a non-consuming encrypted-store load away from the UI thread. It
 immediately closes and clears the decrypted copy, then reports ready only when
-an unexpired entry was present; an empty, expired, or unreadable store requires
-provisioning without implicitly consuming or removing that entry. The
+an unexpired entry was present. An empty or unreadable store requires
+provisioning, while a retained expired entry receives its own classification:
+Connect remains blocked, but Import and explicit Remove remain available. The
 result is revision- and generation-gated so it cannot overwrite a newer tunnel
 lifecycle publication or an import/removal storage transition.
 Consumption repeats the wall-clock expiry check atomically with the storage
 operation. An entry that expires after startup is therefore never returned to
 the native session; it remains encrypted and unconsumed, while the lifecycle
-reports that fresh provisioning is required.
+preserves the expired classification through concurrent teardown.
 Once the service consumes a one-shot reservation, every normal or failed
 terminal path records that fresh provisioning is required. The main screen
 then disables Connect and directs the user to import a new code; a successful
@@ -133,8 +134,8 @@ already-detached connection teardown.
    shutdown, every concurrent close joins that shutdown before teardown
    ownership can be released.
 8. The lifecycle owner publishes tunnel status classifications — connecting,
-   connected, disconnecting, failed, provisioning required, and idle — through
-   a process-scoped observable channel as a start is accepted, an established
+   connected, disconnecting, failed, provisioning required or expired, and
+   idle — through a process-scoped observable channel as a start is accepted, an established
    runtime is promoted, and a stop begins. Disconnecting remains visible until
    resource, connection-worker, and platform-lifecycle cleanup have all
    finished; only then does the owner publish idle, failed, or the corresponding

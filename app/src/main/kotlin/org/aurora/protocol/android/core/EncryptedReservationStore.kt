@@ -18,6 +18,14 @@ internal interface EncryptedReservationBlobStore {
     fun clear()
 }
 
+internal sealed interface ReservationConsumption {
+    data class Available(val reservation: CoreReservation) : ReservationConsumption
+
+    data object Missing : ReservationConsumption
+
+    data object Expired : ReservationConsumption
+}
+
 internal interface ReservationStore {
     /** Atomically replaces the active reservation and records it as reserved. */
     fun save(
@@ -32,8 +40,8 @@ internal interface ReservationStore {
 
     fun load(): CoreReservation?
 
-    /** Atomically removes and returns an unexpired active reservation while retaining history. */
-    fun consume(nowUnix: Long): CoreReservation?
+    /** Atomically classifies the active entry and consumes it only while unexpired. */
+    fun consume(nowUnix: Long): ReservationConsumption
 
     /** Removes only the active reservation while retaining replay history. */
     fun clear()
@@ -155,24 +163,24 @@ internal class EncryptedReservationStore(
     }
 
     @Synchronized
-    override fun consume(nowUnix: Long): CoreReservation? {
+    override fun consume(nowUnix: Long): ReservationConsumption {
         var state: ReservationStorageState? = null
         var reservation: CoreReservation? = null
         try {
             require(nowUnix > 0) { "invalid consumption time" }
-            state = loadState() ?: return null
-            reservation = state.takeReservation() ?: return null
+            state = loadState() ?: return ReservationConsumption.Missing
+            reservation = state.takeReservation() ?: return ReservationConsumption.Missing
             if (reservation.accessHintExpiryUnix <= nowUnix) {
                 // The decoded copy is cleared below, but without a write the
                 // persisted reservation and its replay history remain intact.
-                return null
+                return ReservationConsumption.Expired
             }
             // This atomic ledger-only write is the commit point. The caller never
             // receives a reservation whose spent-hint history was not retained.
             writeState(state)
             val completed = reservation
             reservation = null
-            return completed
+            return ReservationConsumption.Available(completed)
         } catch (error: Exception) {
             throw storageFailure(error)
         } finally {

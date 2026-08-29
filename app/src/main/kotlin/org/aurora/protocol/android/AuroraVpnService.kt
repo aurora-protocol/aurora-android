@@ -25,6 +25,7 @@ import org.aurora.protocol.android.core.AuroraLog
 import org.aurora.protocol.android.core.NativePacketSession
 import org.aurora.protocol.android.core.NativeSessionController
 import org.aurora.protocol.android.core.NativeTunnelRuntime
+import org.aurora.protocol.android.core.ReservationConsumption
 import org.aurora.protocol.android.core.TunnelPacketDevice
 
 internal val vpnTunnelStatus = VpnTunnelStatus()
@@ -160,14 +161,20 @@ class AuroraVpnService : VpnService() {
                 return
             }
 
-            val reservation = (application as AuroraApplication).reservations.consume(
+            val consumption = (application as AuroraApplication).reservations.consume(
                 System.currentTimeMillis() / 1_000,
             )
-            if (!lifecycle.markProvisioningRequired(ownGeneration)) {
-                reservation?.close()
+            val availabilityMarked = when (consumption) {
+                is ReservationConsumption.Available -> lifecycle.markProvisioningRequired(ownGeneration)
+                ReservationConsumption.Missing -> lifecycle.markProvisioningRequired(ownGeneration)
+                ReservationConsumption.Expired -> lifecycle.markProvisioningExpired(ownGeneration)
+            }
+            if (!availabilityMarked) {
+                (consumption as? ReservationConsumption.Available)?.reservation?.close()
                 return
             }
-            val activeReservation = reservation ?: throw MissingProvisioningException()
+            val activeReservation = (consumption as? ReservationConsumption.Available)?.reservation
+                ?: throw UnavailableProvisioningException()
             try {
                 createdSession.establish(activeReservation.provisioning) {
                     device = establishTunnel()
@@ -207,7 +214,7 @@ class AuroraVpnService : VpnService() {
             stopTunnel(
                 stopService = true,
                 expectedGeneration = ownGeneration,
-                failed = error !is MissingProvisioningException,
+                failed = error !is UnavailableProvisioningException,
             )
         }
     }
@@ -341,7 +348,7 @@ class AuroraVpnService : VpnService() {
     }
 }
 
-private class MissingProvisioningException : IllegalStateException("no stored provisioning reservation")
+private class UnavailableProvisioningException : IllegalStateException("no usable stored provisioning reservation")
 
 internal class CloseOnceNativePacketSession(
     private val delegate: NativePacketSession,

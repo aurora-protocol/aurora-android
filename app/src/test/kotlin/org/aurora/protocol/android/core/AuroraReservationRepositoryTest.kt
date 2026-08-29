@@ -36,7 +36,7 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        val reservation = repository.consume(122)
+        val reservation = repository.consumeAvailable(122)
         try {
             assertArrayEquals(byteArrayOf(0x01, 0x02), reservation?.provisioning)
             assertTrue(storage.cleared)
@@ -53,13 +53,13 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        assertTrue(repository.hasUsableStoredReservation(122))
+        assertEquals(StoredReservationAvailability.AVAILABLE, repository.storedReservationAvailability(122))
 
         assertFalse(storage.cleared)
         assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
         assertArrayEquals(ByteArray(48), storage.lastLoadedSpentHintKey)
         assertArrayEquals(ByteArray(16), storage.lastLoadedRelayBucketId)
-        repository.consume(122)?.use { reservation ->
+        repository.consumeAvailable(122)?.use { reservation ->
             assertArrayEquals(byteArrayOf(0x01, 0x02), reservation.provisioning)
         }
         assertTrue(storage.cleared)
@@ -73,7 +73,7 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        assertFalse(repository.hasUsableStoredReservation(123))
+        assertEquals(StoredReservationAvailability.EXPIRED, repository.storedReservationAvailability(123))
 
         assertFalse(storage.cleared)
         assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
@@ -89,7 +89,7 @@ class AuroraReservationRepositoryTest {
             storage,
         )
 
-        assertNull(repository.consume(123))
+        assertEquals(ReservationConsumption.Expired, repository.consume(123))
 
         assertFalse(storage.cleared)
         assertArrayEquals(ByteArray(2), storage.lastLoadedProvisioning)
@@ -108,7 +108,7 @@ class AuroraReservationRepositoryTest {
         val failures = arrayOfNulls<Throwable>(2)
         val first = Thread {
             try {
-                results[0] = repository.consume(122)
+                results[0] = repository.consumeAvailable(122)
             } catch (error: Throwable) {
                 failures[0] = error
             }
@@ -119,7 +119,7 @@ class AuroraReservationRepositoryTest {
             assertTrue(storage.firstLoadEntered.await(2, TimeUnit.SECONDS))
             val secondThread = Thread {
                 try {
-                    results[1] = repository.consume(122)
+                    results[1] = repository.consumeAvailable(122)
                 } catch (error: Throwable) {
                     failures[1] = error
                 }
@@ -238,7 +238,7 @@ class AuroraReservationRepositoryTest {
         val source = byteArrayOf(0x11, 0x22)
 
         repository.reserveAndPersist(reservationRequest(source), 100)
-        val first = requireNotNull(repository.consume(100))
+        val first = requireNotNull(repository.consumeAvailable(100))
         try {
             assertArrayEquals(firstKey, first.spentHintKey)
         } finally {
@@ -246,7 +246,7 @@ class AuroraReservationRepositoryTest {
         }
 
         repository.reserveAndPersist(reservationRequest(source), 100)
-        val second = requireNotNull(repository.consume(100))
+        val second = requireNotNull(repository.consumeAvailable(100))
         try {
             assertArrayEquals(secondKey, second.spentHintKey)
         } finally {
@@ -293,9 +293,9 @@ class AuroraReservationRepositoryTest {
         val firstRequest = reservationRequest(source, listOf(callerKey))
 
         repository.reserveAndPersist(firstRequest, 100)
-        repository.consume(100)?.close()
+        repository.consumeAvailable(100)?.close()
         repository.reserveAndPersist(reservationRequest(source), 100)
-        repository.consume(100)?.close()
+        repository.consumeAvailable(100)?.close()
 
         assertArrayEquals(ByteArray(firstRequest.size), firstRequest)
         assertEquals(2, call)
@@ -326,7 +326,7 @@ class AuroraReservationRepositoryTest {
                 100,
             )
         }
-        storage.consume(100)?.close()
+        storage.consumeAvailable(100).close()
         var receivedCount = -1
         val repository = AuroraReservationRepository(
             NativeProvisioningReservationClient { request, _ ->
@@ -356,7 +356,7 @@ class AuroraReservationRepositoryTest {
                 100,
             )
         }
-        storage.consume(100)?.close()
+        storage.consumeAvailable(100).close()
         val repository = AuroraReservationRepository(
             NativeProvisioningReservationClient { _, _ ->
                 CoreResponse(
@@ -497,7 +497,7 @@ class AuroraReservationRepositoryTest {
 
         override fun load(): CoreReservation? = null
 
-        override fun consume(nowUnix: Long): CoreReservation? = null
+        override fun consume(nowUnix: Long): ReservationConsumption = ReservationConsumption.Missing
 
         override fun clear() = Unit
 
@@ -536,14 +536,14 @@ class AuroraReservationRepositoryTest {
             cleared = true
         }
 
-        override fun consume(nowUnix: Long): CoreReservation? {
+        override fun consume(nowUnix: Long): ReservationConsumption {
             val reservation = load()
             if (reservation.accessHintExpiryUnix <= nowUnix) {
                 reservation.close()
-                return null
+                return ReservationConsumption.Expired
             }
             clear()
-            return reservation
+            return ReservationConsumption.Available(reservation)
         }
 
         override fun purge() = clear()
@@ -591,14 +591,14 @@ class AuroraReservationRepositoryTest {
             available = false
         }
 
-        override fun consume(nowUnix: Long): CoreReservation? {
-            val reservation = load() ?: return null
+        override fun consume(nowUnix: Long): ReservationConsumption {
+            val reservation = load() ?: return ReservationConsumption.Missing
             if (reservation.accessHintExpiryUnix <= nowUnix) {
                 reservation.close()
-                return null
+                return ReservationConsumption.Expired
             }
             clear()
-            return reservation
+            return ReservationConsumption.Available(reservation)
         }
 
         override fun purge() = clear()
@@ -630,6 +630,20 @@ class AuroraReservationRepositoryTest {
             value = null
         }
     }
+
+    private fun AuroraReservationRepository.consumeAvailable(nowUnix: Long): CoreReservation? =
+        when (val consumption = consume(nowUnix)) {
+            is ReservationConsumption.Available -> consumption.reservation
+            ReservationConsumption.Missing, ReservationConsumption.Expired -> null
+        }
+
+    private fun ReservationStore.consumeAvailable(nowUnix: Long): CoreReservation =
+        when (val consumption = consume(nowUnix)) {
+            is ReservationConsumption.Available -> consumption.reservation
+            ReservationConsumption.Missing, ReservationConsumption.Expired -> {
+                throw AssertionError("expected available reservation, got $consumption")
+            }
+        }
 
     private fun waitForBlockedCaller(thread: Thread, enteredStorage: CountDownLatch): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)

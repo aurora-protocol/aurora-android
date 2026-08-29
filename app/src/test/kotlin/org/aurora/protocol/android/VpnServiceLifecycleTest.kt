@@ -154,6 +154,29 @@ class VpnServiceLifecycleTest {
     }
 
     @Test
+    fun `expired provisioning remains distinguishable through teardown`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val channel = VpnTunnelStatus()
+        val process = VpnProcessLifecycle({}, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val generation = lifecycle.acceptedGeneration(56)
+
+        try {
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            assertTrue(lifecycle.markProvisioningExpired(generation))
+            val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertTrue(awaitCondition { channel.status == TunnelStatus.PROVISIONING_EXPIRED })
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `late consumption mark upgrades an already detached failure outcome`() {
         val executor = Executors.newSingleThreadExecutor()
         val channel = VpnTunnelStatus()
@@ -173,6 +196,33 @@ class VpnServiceLifecycleTest {
             lifecycle.finishConnectionWork(generation)
 
             assertTrue(awaitCondition { channel.status == TunnelStatus.FAILED_REQUIRES_PROVISIONING })
+        } finally {
+            lifecycle.release()
+            process.shutdownForTest()
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `late expiry mark preserves retained storage truth after detachment`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val channel = VpnTunnelStatus()
+        val process = VpnProcessLifecycle({}, executor, tunnelStatus = channel)
+        val lifecycle = process.acquire()
+        val generation = lifecycle.acceptedGeneration(57)
+
+        try {
+            assertTrue(lifecycle.beginConnectionWork(generation))
+            val stop = lifecycle.stop(
+                expectedGeneration = generation,
+                failed = true,
+            ) as VpnConnectionStop.Started
+
+            assertFalse(lifecycle.markProvisioningExpired(generation))
+            lifecycle.finishLifecycleStop(stop.teardownId)
+            lifecycle.finishConnectionWork(generation)
+
+            assertTrue(awaitCondition { channel.status == TunnelStatus.PROVISIONING_EXPIRED })
         } finally {
             lifecycle.release()
             process.shutdownForTest()

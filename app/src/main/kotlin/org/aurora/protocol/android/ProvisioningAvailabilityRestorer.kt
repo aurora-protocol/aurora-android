@@ -1,11 +1,12 @@
 package org.aurora.protocol.android
 
 import java.util.concurrent.Executor
+import org.aurora.protocol.android.core.StoredReservationAvailability
 
 /** Restores process UI truth from the encrypted reservation store without consuming it. */
 internal class ProvisioningAvailabilityRestorer(
     private val tunnelStatus: VpnTunnelStatus,
-    private val hasUsableStoredReservation: (Long) -> Boolean,
+    private val storedReservationAvailability: (Long) -> StoredReservationAvailability,
     private val currentUnixTime: () -> Long,
     private val executor: Executor,
     private val onFailure: (Throwable) -> Unit,
@@ -22,17 +23,17 @@ internal class ProvisioningAvailabilityRestorer(
         }
         try {
             executor.execute {
-                val available = try {
-                    hasUsableStoredReservation(currentUnixTime())
+                val availability = try {
+                    storedReservationAvailability(currentUnixTime())
                 } catch (error: Exception) {
                     onFailure(error)
-                    false
+                    StoredReservationAvailability.MISSING
                 }
-                complete(probe, available)
+                complete(probe, availability)
             }
         } catch (error: RuntimeException) {
             onFailure(error)
-            complete(probe, available = false)
+            complete(probe, StoredReservationAvailability.MISSING)
         }
     }
 
@@ -43,7 +44,7 @@ internal class ProvisioningAvailabilityRestorer(
         }
     }
 
-    private fun complete(probe: AvailabilityProbe, available: Boolean) {
+    private fun complete(probe: AvailabilityProbe, availability: StoredReservationAvailability) {
         synchronized(lock) {
             if (generation != probe.generation) {
                 return
@@ -51,7 +52,11 @@ internal class ProvisioningAvailabilityRestorer(
             ++generation
             tunnelStatus.publishIfCurrent(
                 probe.expectedStatus,
-                if (available) TunnelStatus.IDLE else TunnelStatus.PROVISIONING_REQUIRED,
+                when (availability) {
+                    StoredReservationAvailability.AVAILABLE -> TunnelStatus.IDLE
+                    StoredReservationAvailability.MISSING -> TunnelStatus.PROVISIONING_REQUIRED
+                    StoredReservationAvailability.EXPIRED -> TunnelStatus.PROVISIONING_EXPIRED
+                },
             )
         }
     }

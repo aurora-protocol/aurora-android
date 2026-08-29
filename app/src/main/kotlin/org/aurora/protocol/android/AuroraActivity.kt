@@ -43,6 +43,7 @@ class AuroraActivity : Activity() {
     private var pendingImport: CharArray? = null
     private var storageOperationInProgress = false
     private var statusObserver: (() -> Unit)? = null
+    private var statusObserverGeneration = 0L
     private var renderedTunnelStatus: TunnelStatus? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,8 +63,13 @@ class AuroraActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val generation = ++statusObserverGeneration
         val observation = vpnTunnelStatus.observeCurrent { update ->
-            runOnUiThread { renderTunnelStatus(update) }
+            runOnUiThread {
+                if (generation == statusObserverGeneration) {
+                    renderTunnelStatus(update)
+                }
+            }
         }
         // Catch up only when the classification changed since the last tunnel
         // publication this screen rendered, so local request/import feedback
@@ -77,6 +83,7 @@ class AuroraActivity : Activity() {
     }
 
     override fun onPause() {
+        ++statusObserverGeneration
         statusObserver?.invoke()
         statusObserver = null
         super.onPause()

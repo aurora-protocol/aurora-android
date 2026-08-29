@@ -13,6 +13,7 @@ class AuroraApplication : Application() {
         private set
     internal lateinit var provisioningAvailability: ProvisioningAvailabilityRestorer
         private set
+    internal val provisioningStorageOperations = ProvisioningStorageOperations()
 
     override fun onCreate() {
         super.onCreate()

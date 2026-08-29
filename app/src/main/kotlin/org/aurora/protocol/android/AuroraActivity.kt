@@ -44,8 +44,8 @@ class AuroraActivity : Activity() {
     private lateinit var requestState: ConnectionRequestState
     private val importInputLock = Any()
     private var pendingImport: CharArray? = null
-    private var storageOperationInProgress = false
     private var statusObserver: (() -> Unit)? = null
+    private var storageOperationObserver: (() -> Unit)? = null
     private var statusObserverGeneration = 0L
     private var screenResumed = false
     private lateinit var tunnelStatusRenderState: TunnelStatusRenderState
@@ -60,6 +60,10 @@ class AuroraActivity : Activity() {
             (application as AuroraApplication).provisioningAvailability.expireKnownReservation(expiryUnix)
         },
     )
+    private val provisioningStorageOperations: ProvisioningStorageOperations
+        get() = (application as AuroraApplication).provisioningStorageOperations
+    private val storageOperationInProgress: Boolean
+        get() = provisioningStorageOperations.publication.operation != null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,6 +76,7 @@ class AuroraActivity : Activity() {
             ),
         )
         val initialTunnelStatus = vpnTunnelStatus.publication
+        val initialStorageOperation = provisioningStorageOperations.publication
         tunnelStatusRenderState = TunnelStatusRenderState(initialTunnelStatus)
         val restoredCommand = savedInstanceState?.getString(savedVpnServiceCommand)?.let { name ->
             enumValues<VpnServiceCommand>().firstOrNull { it.name == name }
@@ -100,7 +105,7 @@ class AuroraActivity : Activity() {
             restoredProcessSessionId = savedInstanceState?.getString(savedVpnServiceProcessSession),
             currentStatusRevision = initialTunnelStatus.revision,
         )
-        setContentView(buildContent(initialTunnelStatus.status))
+        setContentView(buildContent(initialTunnelStatus.status, initialStorageOperation.operation))
         refreshControls()
         schedulePendingVpnServiceReconciliation()
     }
@@ -150,6 +155,15 @@ class AuroraActivity : Activity() {
         // preserving local feedback when no newer publication exists.
         renderTunnelStatus(observation.publication)
         statusObserver = observation.unsubscribe
+        val storageObservation = provisioningStorageOperations.observeCurrent { update ->
+            runOnUiThread {
+                if (generation == statusObserverGeneration) {
+                    renderStorageOperation(update)
+                }
+            }
+        }
+        renderStorageOperation(storageObservation.publication)
+        storageOperationObserver = storageObservation.unsubscribe
         val mayRefreshProvisioning = provisioningRefreshAllowed(
             importInProgress = requestState.importInProgress,
             storageOperationInProgress = storageOperationInProgress,
@@ -168,6 +182,8 @@ class AuroraActivity : Activity() {
         ++statusObserverGeneration
         statusObserver?.invoke()
         statusObserver = null
+        storageOperationObserver?.invoke()
+        storageOperationObserver = null
         super.onPause()
     }
 
@@ -175,6 +191,8 @@ class AuroraActivity : Activity() {
         vpnServiceRequestHandler.removeCallbacks(reconcileVpnServiceRequest)
         provisioningExpiryMonitor.stop()
         worker.shutdownNow()
+            .filterIsInstance<ProvisioningStorageCommand>()
+            .forEach(ProvisioningStorageCommand::discardIfQueued)
         synchronized(importInputLock) {
             pendingImport?.fill('\u0000')
             pendingImport = null
@@ -215,7 +233,10 @@ class AuroraActivity : Activity() {
         requestVpnPreparation()
     }
 
-    private fun buildContent(initialTunnelStatus: TunnelStatus): View {
+    private fun buildContent(
+        initialTunnelStatus: TunnelStatus,
+        initialStorageOperation: ProvisioningStorageOperation?,
+    ): View {
         val contentPadding = dp(24)
         val itemSpacing = dp(12)
         val layout = LinearLayout(this).apply {
@@ -248,6 +269,10 @@ class AuroraActivity : Activity() {
                     vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.status_connecting
                     vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT -> {
                         R.string.status_disconnect_requested
+                    }
+                    initialStorageOperation == ProvisioningStorageOperation.IMPORTING -> R.string.status_importing
+                    initialStorageOperation == ProvisioningStorageOperation.REMOVING -> {
+                        R.string.status_removing_provisioning
                     }
                     else -> tunnelStatusText(initialTunnelStatus)
                 },
@@ -312,10 +337,15 @@ class AuroraActivity : Activity() {
         if (!requestState.beginImport()) {
             return
         }
+        val lease = provisioningStorageOperations.begin(ProvisioningStorageOperation.IMPORTING) ?: run {
+            requestState.completeImport()
+            return
+        }
         val editable = importField.text
         if (!ProvisioningImport.hasValidEncodedLength(editable.length)) {
             editable.clear()
             requestState.completeImport()
+            provisioningStorageOperations.complete(lease)
             showLocalStatus(R.string.status_import_failed)
             refreshControls()
             return
@@ -328,41 +358,46 @@ class AuroraActivity : Activity() {
         (application as AuroraApplication).provisioningAvailability.invalidate()
         showLocalStatus(R.string.status_importing)
         refreshControls()
-        try {
-            worker.execute {
-                var importedExpiryUnix: Long? = null
-                val message = try {
-                    val ownsInput = synchronized(importInputLock) {
-                        if (pendingImport !== encoded) {
-                            false
-                        } else {
-                            pendingImport = null
-                            true
-                        }
+        var message = R.string.status_import_failed
+        var importedExpiryUnix: Long? = null
+        val storageCommand = ProvisioningStorageCommand(
+            operations = provisioningStorageOperations,
+            lease = lease,
+            work = {
+                val ownsInput = synchronized(importInputLock) {
+                    if (pendingImport !== encoded) {
+                        false
+                    } else {
+                        pendingImport = null
+                        true
                     }
-                    if (!ownsInput || Thread.currentThread().isInterrupted) {
-                        encoded.fill('\u0000')
-                        return@execute
-                    }
-                    val request = ProvisioningImport.decode(encoded)
-                    try {
-                        if (Thread.currentThread().isInterrupted) {
-                            return@execute
-                        }
-                        importedExpiryUnix = (application as AuroraApplication).reservations.reserveAndPersist(
-                            request,
-                            System.currentTimeMillis() / 1_000,
-                        )
-                    } finally {
-                        // The repository owns and clears successful calls. Keep a
-                        // final caller-side scrub for initialization/cast failures.
-                        request.fill(0)
-                    }
-                    R.string.status_import_succeeded
-                } catch (error: Exception) {
-                    AuroraLog.debug("provisioning import", error)
-                    R.string.status_import_failed
                 }
+                if (!ownsInput || Thread.currentThread().isInterrupted) {
+                    encoded.fill('\u0000')
+                } else {
+                    val request = try {
+                        ProvisioningImport.decode(encoded)
+                    } catch (error: IllegalArgumentException) {
+                        AuroraLog.debug("provisioning import", error)
+                        encoded.fill('\u0000')
+                        null
+                    }
+                    if (request != null && !Thread.currentThread().isInterrupted) {
+                        try {
+                            importedExpiryUnix = (application as AuroraApplication).reservations.reserveAndPersist(
+                                request,
+                                System.currentTimeMillis() / 1_000,
+                            )
+                            message = R.string.status_import_succeeded
+                        } catch (error: Exception) {
+                            AuroraLog.debug("provisioning import", error)
+                        } finally {
+                            request.fill(0)
+                        }
+                    }
+                }
+            },
+            afterCompletion = {
                 importedExpiryUnix?.let {
                     (application as AuroraApplication).provisioningAvailability.recordImportedReservation(it)
                 }
@@ -374,7 +409,10 @@ class AuroraActivity : Activity() {
                     showLocalStatus(message)
                     refreshControls()
                 }
-            }
+            },
+        )
+        try {
+            worker.execute(storageCommand)
         } catch (_: RejectedExecutionException) {
             synchronized(importInputLock) {
                 if (pendingImport === encoded) {
@@ -382,6 +420,7 @@ class AuroraActivity : Activity() {
                 }
                 encoded.fill('\u0000')
             }
+            storageCommand.discardIfQueued()
             requestState.completeImport()
             showLocalStatus(R.string.status_import_failed)
             refreshControls()
@@ -425,18 +464,21 @@ class AuroraActivity : Activity() {
             return
         }
         (application as AuroraApplication).provisioningAvailability.invalidate()
-        storageOperationInProgress = true
-        showLocalStatus(R.string.status_removing_provisioning)
-        refreshControls()
-        try {
-            worker.execute {
-                val message = try {
+        val lease = provisioningStorageOperations.begin(ProvisioningStorageOperation.REMOVING) ?: return
+        var message = R.string.status_remove_provisioning_failed
+        val storageCommand = ProvisioningStorageCommand(
+            operations = provisioningStorageOperations,
+            lease = lease,
+            work = {
+                message = try {
                     (application as AuroraApplication).reservations.clear()
                     R.string.status_provisioning_removed
                 } catch (error: Exception) {
                     AuroraLog.debug("provisioning removal", error)
                     R.string.status_remove_provisioning_failed
                 }
+            },
+            afterCompletion = {
                 if (message == R.string.status_provisioning_removed) {
                     (application as AuroraApplication).provisioningAvailability.recordProvisioningRemoved()
                 }
@@ -444,14 +486,17 @@ class AuroraActivity : Activity() {
                     if (isFinishing || isDestroyed) {
                         return@runOnUiThread
                     }
-                    storageOperationInProgress = false
                     showLocalStatus(message)
                     refreshControls()
                 }
-            }
+            },
+        )
+        showLocalStatus(R.string.status_removing_provisioning)
+        refreshControls()
+        try {
+            worker.execute(storageCommand)
         } catch (error: RejectedExecutionException) {
-            AuroraLog.debug("provisioning removal dispatch", error)
-            storageOperationInProgress = false
+            storageCommand.discardIfQueued()
             showLocalStatus(R.string.status_remove_provisioning_failed)
             refreshControls()
         }
@@ -547,6 +592,24 @@ class AuroraActivity : Activity() {
         AuroraLog.debug(operation, error)
         requestState.cancelConnectionRequest()
         showLocalStatus(R.string.status_connection_failed)
+        refreshControls()
+    }
+
+    private fun renderStorageOperation(update: ProvisioningStorageOperationPublication) {
+        when (update.operation) {
+            ProvisioningStorageOperation.IMPORTING -> showLocalStatus(R.string.status_importing)
+            ProvisioningStorageOperation.REMOVING -> showLocalStatus(R.string.status_removing_provisioning)
+            null -> showLocalStatus(
+                when {
+                    requestState.connectRequested -> R.string.status_waiting_for_permission
+                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.status_connecting
+                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT -> {
+                        R.string.status_disconnect_requested
+                    }
+                    else -> tunnelStatusText(vpnTunnelStatus.status)
+                },
+            )
+        }
         refreshControls()
     }
 

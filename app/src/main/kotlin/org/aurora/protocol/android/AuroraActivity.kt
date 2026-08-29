@@ -33,6 +33,7 @@ class AuroraActivity : Activity() {
     private lateinit var importField: EditText
     private lateinit var importButton: Button
     private lateinit var connectButton: Button
+    private lateinit var disconnectButton: Button
     private lateinit var progressIndicator: ProgressBar
     private lateinit var status: TextView
     private lateinit var requestState: ConnectionRequestState
@@ -45,7 +46,9 @@ class AuroraActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         requestState = ConnectionRequestState(savedInstanceState?.getBoolean(savedConnectionRequest) == true)
-        setContentView(buildContent())
+        val initialTunnelStatus = vpnTunnelStatus.status
+        renderedTunnelStatus = initialTunnelStatus
+        setContentView(buildContent(initialTunnelStatus))
         refreshControls()
     }
 
@@ -56,17 +59,18 @@ class AuroraActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val observation = vpnTunnelStatus.observeCurrent { update ->
+            runOnUiThread { renderTunnelStatus(update) }
+        }
         // Catch up only when the classification changed since the last tunnel
         // publication this screen rendered, so local request/import feedback
         // shown while the tunnel stayed idle is not overwritten.
-        val current = vpnTunnelStatus.status
+        val current = observation.status
         val rendered = renderedTunnelStatus
         if (rendered != null && current != rendered) {
             renderTunnelStatus(current)
         }
-        statusObserver = vpnTunnelStatus.observe { update ->
-            runOnUiThread { renderTunnelStatus(update) }
-        }
+        statusObserver = observation.unsubscribe
     }
 
     override fun onPause() {
@@ -117,7 +121,7 @@ class AuroraActivity : Activity() {
         requestVpnPreparation()
     }
 
-    private fun buildContent(): View {
+    private fun buildContent(initialTunnelStatus: TunnelStatus): View {
         val contentPadding = dp(24)
         val itemSpacing = dp(12)
         val layout = LinearLayout(this).apply {
@@ -148,7 +152,7 @@ class AuroraActivity : Activity() {
                 if (requestState.connectRequested) {
                     R.string.status_waiting_for_permission
                 } else {
-                    tunnelStatusText(vpnTunnelStatus.status)
+                    tunnelStatusText(initialTunnelStatus)
                 },
             )
         }
@@ -171,10 +175,8 @@ class AuroraActivity : Activity() {
         connectButton = commandButton(R.string.action_connect) { connect() }
         layout.addView(importButton, matchWidth(itemSpacing))
         layout.addView(connectButton, matchWidth(itemSpacing))
-        layout.addView(
-            commandButton(R.string.action_disconnect) { disconnect() },
-            matchWidth(itemSpacing),
-        )
+        disconnectButton = commandButton(R.string.action_disconnect) { disconnect() }
+        layout.addView(disconnectButton, matchWidth(itemSpacing))
         layout.addView(progressIndicator, wrapContent(itemSpacing))
         layout.addView(statusLabel, matchWidth(itemSpacing))
         layout.addView(status, matchWidth(dp(4)))
@@ -346,8 +348,12 @@ class AuroraActivity : Activity() {
     }
 
     private fun renderTunnelStatus(update: TunnelStatus) {
+        if (update != vpnTunnelStatus.status) {
+            return
+        }
         renderedTunnelStatus = update
         status.setText(tunnelStatusText(update))
+        refreshControls()
     }
 
     private fun refreshControls() {
@@ -355,12 +361,14 @@ class AuroraActivity : Activity() {
             importInProgress = requestState.importInProgress,
             connectRequested = requestState.connectRequested,
             hasProvisioningInput = importField.text.isNotEmpty(),
+            tunnelStatus = vpnTunnelStatus.status,
         )
         importField.isEnabled = controls.importInputEnabled
         importButton.isEnabled = controls.importEnabled
         importButton.setText(if (requestState.importInProgress) R.string.action_importing else R.string.action_import)
         connectButton.isEnabled = controls.connectEnabled
         connectButton.setText(if (requestState.connectRequested) R.string.action_waiting_for_permission else R.string.action_connect)
+        disconnectButton.isEnabled = controls.disconnectEnabled
         progressIndicator.visibility = if (controls.showProgress) View.VISIBLE else View.GONE
     }
 

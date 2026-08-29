@@ -112,9 +112,12 @@ packet contents.
    connected, failed, and idle — through a process-scoped observable channel
    as a start is accepted, an established runtime is promoted, and a stop
    begins; failure-originated stops publish the failed classification. The
-   activity observes the channel while resumed and renders only the latest
-   classification, so terminal outcomes replace transitional request states
-   and the UI never displays error material.
+   activity atomically subscribes and captures the current classification while
+   resumed, so a transition cannot fall between its catch-up read and observer
+   registration. It renders only the latest classification and derives the
+   connect/disconnect controls from it, preventing duplicate starts while a
+   tunnel is connecting or connected. Terminal outcomes replace transitional
+   request states and the UI never displays error material.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.

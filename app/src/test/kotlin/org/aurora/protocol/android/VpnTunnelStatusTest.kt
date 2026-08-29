@@ -39,6 +39,20 @@ class VpnTunnelStatusTest {
     }
 
     @Test
+    fun `current observation closes the read then subscribe transition gap`() {
+        val channel = VpnTunnelStatus()
+        channel.publish(TunnelStatus.CONNECTING)
+        val observed = mutableListOf<TunnelStatus>()
+
+        val observation = channel.observeCurrent(observed::add)
+        channel.publish(TunnelStatus.CONNECTED)
+
+        assertEquals(TunnelStatus.CONNECTING, observation.status)
+        assertEquals(listOf(TunnelStatus.CONNECTED), observed)
+        observation.unsubscribe()
+    }
+
+    @Test
     fun `a throwing observer breaks neither the channel nor later observers`() {
         val channel = VpnTunnelStatus()
         val observed = mutableListOf<TunnelStatus>()

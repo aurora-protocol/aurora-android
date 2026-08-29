@@ -11,12 +11,14 @@ class MainScreenControlsTest {
                 importInputEnabled = true,
                 importEnabled = false,
                 connectEnabled = true,
+                disconnectEnabled = false,
                 showProgress = false,
             ),
             mainScreenControls(
                 importInProgress = false,
                 connectRequested = false,
                 hasProvisioningInput = false,
+                tunnelStatus = TunnelStatus.IDLE,
             ),
         )
     }
@@ -28,12 +30,14 @@ class MainScreenControlsTest {
                 importInputEnabled = true,
                 importEnabled = true,
                 connectEnabled = true,
+                disconnectEnabled = false,
                 showProgress = false,
             ),
             mainScreenControls(
                 importInProgress = false,
                 connectRequested = false,
                 hasProvisioningInput = true,
+                tunnelStatus = TunnelStatus.IDLE,
             ),
         )
     }
@@ -44,10 +48,48 @@ class MainScreenControlsTest {
             importInputEnabled = false,
             importEnabled = false,
             connectEnabled = false,
+            disconnectEnabled = false,
             showProgress = true,
         )
 
-        assertEquals(expected, mainScreenControls(true, false, true))
-        assertEquals(expected, mainScreenControls(false, true, true))
+        assertEquals(expected, mainScreenControls(true, false, true, TunnelStatus.IDLE))
+        assertEquals(
+            expected.copy(disconnectEnabled = true),
+            mainScreenControls(false, true, true, TunnelStatus.IDLE),
+        )
+    }
+
+    @Test
+    fun `active tunnel disables duplicate starts and enables disconnect`() {
+        val expected = MainScreenControls(
+            importInputEnabled = false,
+            importEnabled = false,
+            connectEnabled = false,
+            disconnectEnabled = true,
+            showProgress = false,
+        )
+
+        assertEquals(
+            expected.copy(showProgress = true),
+            mainScreenControls(false, false, true, TunnelStatus.CONNECTING),
+        )
+        assertEquals(
+            expected,
+            mainScreenControls(false, false, true, TunnelStatus.CONNECTED),
+        )
+    }
+
+    @Test
+    fun `failed tunnel returns controls to a retryable idle shape`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = true,
+                importEnabled = true,
+                connectEnabled = true,
+                disconnectEnabled = false,
+                showProgress = false,
+            ),
+            mainScreenControls(false, false, true, TunnelStatus.FAILED),
+        )
     }
 }

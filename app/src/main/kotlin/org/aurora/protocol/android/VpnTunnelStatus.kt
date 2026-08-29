@@ -39,16 +39,31 @@ internal class VpnTunnelStatus {
 
     /** Registers [observer] for future publications; returns an unsubscribe action. */
     fun observe(observer: (TunnelStatus) -> Unit): () -> Unit {
-        synchronized(lock) {
+        return observeCurrent(observer).unsubscribe
+    }
+
+    /**
+     * Atomically registers [observer] and captures the current classification.
+     * This closes the read-then-observe gap for screens that must catch every
+     * transition after the snapshot they render.
+     */
+    fun observeCurrent(observer: (TunnelStatus) -> Unit): TunnelStatusObservation {
+        val initial = synchronized(lock) {
             observers += observer
+            current
         }
-        return {
+        return TunnelStatusObservation(initial) {
             synchronized(lock) {
                 observers.removeIf { it === observer }
             }
         }
     }
 }
+
+internal data class TunnelStatusObservation(
+    val status: TunnelStatus,
+    val unsubscribe: () -> Unit,
+)
 
 internal fun tunnelStatusText(status: TunnelStatus): Int = when (status) {
     TunnelStatus.IDLE -> R.string.status_ready

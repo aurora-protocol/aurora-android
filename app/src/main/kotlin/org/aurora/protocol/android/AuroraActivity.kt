@@ -2,6 +2,7 @@ package org.aurora.protocol.android
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -32,6 +33,7 @@ class AuroraActivity : Activity() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var importField: EditText
     private lateinit var importButton: Button
+    private lateinit var removeProvisioningButton: Button
     private lateinit var connectButton: Button
     private lateinit var disconnectButton: Button
     private lateinit var progressIndicator: ProgressBar
@@ -39,6 +41,7 @@ class AuroraActivity : Activity() {
     private lateinit var requestState: ConnectionRequestState
     private val importInputLock = Any()
     private var pendingImport: CharArray? = null
+    private var storageOperationInProgress = false
     private var statusObserver: (() -> Unit)? = null
     private var renderedTunnelStatus: TunnelStatus? = null
 
@@ -172,8 +175,12 @@ class AuroraActivity : Activity() {
         layout.addView(importLabel, matchWidth())
         layout.addView(importField, matchWidth(dp(4)))
         importButton = commandButton(R.string.action_import) { importProvisioning() }
+        removeProvisioningButton = commandButton(R.string.action_remove_provisioning) {
+            confirmRemoveProvisioning()
+        }
         connectButton = commandButton(R.string.action_connect) { connect() }
         layout.addView(importButton, matchWidth(itemSpacing))
+        layout.addView(removeProvisioningButton, matchWidth(itemSpacing))
         layout.addView(connectButton, matchWidth(itemSpacing))
         disconnectButton = commandButton(R.string.action_disconnect) { disconnect() }
         layout.addView(disconnectButton, matchWidth(itemSpacing))
@@ -298,6 +305,49 @@ class AuroraActivity : Activity() {
         requestVpnPreparation()
     }
 
+    private fun confirmRemoveProvisioning() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.remove_provisioning_title)
+            .setMessage(R.string.remove_provisioning_message)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.action_remove_provisioning) { _, _ -> removeProvisioning() }
+            .show()
+    }
+
+    private fun removeProvisioning() {
+        val controls = currentControls()
+        if (!controls.removeProvisioningEnabled) {
+            return
+        }
+        storageOperationInProgress = true
+        status.setText(R.string.status_removing_provisioning)
+        refreshControls()
+        try {
+            worker.execute {
+                val message = try {
+                    (application as AuroraApplication).reservations.clear()
+                    R.string.status_provisioning_removed
+                } catch (error: Exception) {
+                    AuroraLog.debug("provisioning removal", error)
+                    R.string.status_remove_provisioning_failed
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) {
+                        return@runOnUiThread
+                    }
+                    storageOperationInProgress = false
+                    status.setText(message)
+                    refreshControls()
+                }
+            }
+        } catch (error: RejectedExecutionException) {
+            AuroraLog.debug("provisioning removal dispatch", error)
+            storageOperationInProgress = false
+            status.setText(R.string.status_remove_provisioning_failed)
+            refreshControls()
+        }
+    }
+
     private fun requestVpnPreparation() {
         if (!requestState.connectRequested) {
             return
@@ -357,20 +407,27 @@ class AuroraActivity : Activity() {
     }
 
     private fun refreshControls() {
-        val controls = mainScreenControls(
-            importInProgress = requestState.importInProgress,
-            connectRequested = requestState.connectRequested,
-            hasProvisioningInput = importField.text.isNotEmpty(),
-            tunnelStatus = vpnTunnelStatus.status,
-        )
+        val controls = currentControls()
         importField.isEnabled = controls.importInputEnabled
         importButton.isEnabled = controls.importEnabled
         importButton.setText(if (requestState.importInProgress) R.string.action_importing else R.string.action_import)
+        removeProvisioningButton.isEnabled = controls.removeProvisioningEnabled
+        removeProvisioningButton.setText(
+            if (storageOperationInProgress) R.string.action_removing_provisioning else R.string.action_remove_provisioning,
+        )
         connectButton.isEnabled = controls.connectEnabled
         connectButton.setText(if (requestState.connectRequested) R.string.action_waiting_for_permission else R.string.action_connect)
         disconnectButton.isEnabled = controls.disconnectEnabled
         progressIndicator.visibility = if (controls.showProgress) View.VISIBLE else View.GONE
     }
+
+    private fun currentControls(): MainScreenControls = mainScreenControls(
+        importInProgress = requestState.importInProgress,
+        storageOperationInProgress = storageOperationInProgress,
+        connectRequested = requestState.connectRequested,
+        hasProvisioningInput = importField.text.isNotEmpty(),
+        tunnelStatus = vpnTunnelStatus.status,
+    )
 
     private fun matchWidth(topMargin: Int = 0): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

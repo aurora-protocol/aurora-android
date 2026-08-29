@@ -10,12 +10,14 @@ class MainScreenControlsTest {
             MainScreenControls(
                 importInputEnabled = true,
                 importEnabled = false,
+                removeProvisioningEnabled = true,
                 connectEnabled = true,
                 disconnectEnabled = false,
                 showProgress = false,
             ),
             mainScreenControls(
                 importInProgress = false,
+                storageOperationInProgress = false,
                 connectRequested = false,
                 hasProvisioningInput = false,
                 tunnelStatus = TunnelStatus.IDLE,
@@ -29,12 +31,14 @@ class MainScreenControlsTest {
             MainScreenControls(
                 importInputEnabled = true,
                 importEnabled = true,
+                removeProvisioningEnabled = true,
                 connectEnabled = true,
                 disconnectEnabled = false,
                 showProgress = false,
             ),
             mainScreenControls(
                 importInProgress = false,
+                storageOperationInProgress = false,
                 connectRequested = false,
                 hasProvisioningInput = true,
                 tunnelStatus = TunnelStatus.IDLE,
@@ -47,15 +51,16 @@ class MainScreenControlsTest {
         val expected = MainScreenControls(
             importInputEnabled = false,
             importEnabled = false,
+            removeProvisioningEnabled = false,
             connectEnabled = false,
             disconnectEnabled = false,
             showProgress = true,
         )
 
-        assertEquals(expected, mainScreenControls(true, false, true, TunnelStatus.IDLE))
+        assertEquals(expected, mainScreenControls(true, false, false, true, TunnelStatus.IDLE))
         assertEquals(
             expected.copy(disconnectEnabled = true),
-            mainScreenControls(false, true, true, TunnelStatus.IDLE),
+            mainScreenControls(false, false, true, true, TunnelStatus.IDLE),
         )
     }
 
@@ -64,6 +69,7 @@ class MainScreenControlsTest {
         val expected = MainScreenControls(
             importInputEnabled = false,
             importEnabled = false,
+            removeProvisioningEnabled = false,
             connectEnabled = false,
             disconnectEnabled = true,
             showProgress = false,
@@ -71,11 +77,11 @@ class MainScreenControlsTest {
 
         assertEquals(
             expected.copy(showProgress = true),
-            mainScreenControls(false, false, true, TunnelStatus.CONNECTING),
+            mainScreenControls(false, false, false, true, TunnelStatus.CONNECTING),
         )
         assertEquals(
             expected,
-            mainScreenControls(false, false, true, TunnelStatus.CONNECTED),
+            mainScreenControls(false, false, false, true, TunnelStatus.CONNECTED),
         )
     }
 
@@ -85,11 +91,12 @@ class MainScreenControlsTest {
             MainScreenControls(
                 importInputEnabled = true,
                 importEnabled = true,
+                removeProvisioningEnabled = true,
                 connectEnabled = true,
                 disconnectEnabled = false,
                 showProgress = false,
             ),
-            mainScreenControls(false, false, true, TunnelStatus.FAILED),
+            mainScreenControls(false, false, false, true, TunnelStatus.FAILED),
         )
     }
 
@@ -99,11 +106,27 @@ class MainScreenControlsTest {
             MainScreenControls(
                 importInputEnabled = false,
                 importEnabled = false,
+                removeProvisioningEnabled = false,
                 connectEnabled = false,
                 disconnectEnabled = false,
                 showProgress = true,
             ),
-            mainScreenControls(false, false, true, TunnelStatus.DISCONNECTING),
+            mainScreenControls(false, false, false, true, TunnelStatus.DISCONNECTING),
+        )
+    }
+
+    @Test
+    fun `storage operation blocks every conflicting command`() {
+        assertEquals(
+            MainScreenControls(
+                importInputEnabled = false,
+                importEnabled = false,
+                removeProvisioningEnabled = false,
+                connectEnabled = false,
+                disconnectEnabled = false,
+                showProgress = true,
+            ),
+            mainScreenControls(false, true, false, true, TunnelStatus.IDLE),
         )
     }
 }

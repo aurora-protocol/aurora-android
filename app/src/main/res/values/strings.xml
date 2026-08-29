@@ -4,6 +4,8 @@
     <string name="provisioning_import_hint">Paste the provisioning code</string>
     <string name="action_import">Import provisioning code</string>
     <string name="action_importing">Importing provisioning code…</string>
+    <string name="action_remove_provisioning">Remove stored provisioning</string>
+    <string name="action_removing_provisioning">Removing stored provisioning…</string>
     <string name="action_connect">Connect</string>
     <string name="action_waiting_for_permission">Waiting for permission…</string>
     <string name="action_disconnect">Disconnect</string>
@@ -12,6 +14,11 @@
     <string name="status_importing">Importing provisioning code…</string>
     <string name="status_import_succeeded">Provisioning code imported</string>
     <string name="status_import_failed">Could not import the provisioning code. Check the code and try again.</string>
+    <string name="remove_provisioning_title">Remove stored provisioning?</string>
+    <string name="remove_provisioning_message">This removes the active provisioning entry from this device. Local replay-protection history is kept.</string>
+    <string name="status_removing_provisioning">Removing stored provisioning…</string>
+    <string name="status_provisioning_removed">Stored provisioning removed</string>
+    <string name="status_remove_provisioning_failed">Could not remove stored provisioning. Try again.</string>
     <string name="status_waiting_for_permission">Waiting for permission…</string>
     <string name="status_permission_request_failed">Could not complete the permission request. Try connecting again.</string>
     <string name="status_connecting">Connecting…</string>

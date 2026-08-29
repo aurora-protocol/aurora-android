@@ -77,6 +77,11 @@ validated source binds it. Logs and UI state expose only status
 classifications, never provisioning bytes, root data, issuer responses, or
 packet contents.
 
+The main screen exposes a confirmed removal action for the active stored
+reservation. It performs encrypted storage I/O off the UI thread, disables
+conflicting import and connection commands until completion, and deliberately
+uses `clear` rather than `purge` so local spent-hint history remains intact.
+
 ## VPN Lifecycle
 
 1. The UI asks the operating system for VPN consent.

@@ -44,6 +44,17 @@ internal class VpnTunnelStatus {
 
     /** Publishes [update] only while both the state and revision still match [expected]. */
     fun publishIfCurrent(expected: TunnelStatusPublication, update: TunnelStatus): Boolean {
+        return publishIfCurrentAndGet(expected, update) != null
+    }
+
+    /**
+     * Publishes [update] only while [expected] is current and returns the exact
+     * resulting publication for a later conditional transition.
+     */
+    fun publishIfCurrentAndGet(
+        expected: TunnelStatusPublication,
+        update: TunnelStatus,
+    ): TunnelStatusPublication? {
         val publication = synchronized(lock) {
             if (current != expected.status || revision != expected.revision) {
                 null
@@ -52,9 +63,9 @@ internal class VpnTunnelStatus {
                 val next = TunnelStatusPublication(update, ++revision)
                 next to observers.toList()
             }
-        } ?: return false
+        } ?: return null
         notifyObservers(publication.first, publication.second)
-        return true
+        return publication.first
     }
 
     /** Publishes the current state as a command acknowledgement unless another transition won the race. */

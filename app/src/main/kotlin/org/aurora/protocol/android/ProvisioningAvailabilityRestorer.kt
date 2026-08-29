@@ -13,14 +13,53 @@ internal class ProvisioningAvailabilityRestorer(
 ) {
     private val lock = Any()
     private var generation = 0L
+    private var observedMainScreenResume = false
 
     fun start() {
         val probe = synchronized(lock) {
+            val probeGeneration = ++generation
             AvailabilityProbe(
-                generation = ++generation,
+                generation = probeGeneration,
                 expectedStatus = tunnelStatus.publish(TunnelStatus.CHECKING_PROVISIONING),
+                availableStatus = TunnelStatus.IDLE,
             )
         }
+        dispatch(probe)
+    }
+
+    /**
+     * Rechecks reservation truth after the main screen returns from the background.
+     * The first resume reuses the process-start probe, and only retryable states
+     * known to retain a reservation may enter a later check.
+     */
+    fun onMainScreenResumed(refreshAllowed: Boolean) {
+        val probe = synchronized(lock) {
+            if (!observedMainScreenResume) {
+                observedMainScreenResume = true
+                return@synchronized null
+            }
+            if (!refreshAllowed) {
+                return@synchronized null
+            }
+            val current = tunnelStatus.publication
+            if (current.status != TunnelStatus.IDLE && current.status != TunnelStatus.FAILED) {
+                return@synchronized null
+            }
+            val probeGeneration = ++generation
+            val checking = tunnelStatus.publishIfCurrentAndGet(
+                current,
+                TunnelStatus.CHECKING_PROVISIONING,
+            ) ?: return@synchronized null
+            AvailabilityProbe(
+                generation = probeGeneration,
+                expectedStatus = checking,
+                availableStatus = current.status,
+            )
+        } ?: return
+        dispatch(probe)
+    }
+
+    private fun dispatch(probe: AvailabilityProbe) {
         try {
             executor.execute {
                 val availability = try {
@@ -53,7 +92,7 @@ internal class ProvisioningAvailabilityRestorer(
             tunnelStatus.publishIfCurrent(
                 probe.expectedStatus,
                 when (availability) {
-                    StoredReservationAvailability.AVAILABLE -> TunnelStatus.IDLE
+                    StoredReservationAvailability.AVAILABLE -> probe.availableStatus
                     StoredReservationAvailability.MISSING -> TunnelStatus.PROVISIONING_REQUIRED
                     StoredReservationAvailability.EXPIRED -> TunnelStatus.PROVISIONING_EXPIRED
                 },
@@ -64,5 +103,17 @@ internal class ProvisioningAvailabilityRestorer(
     private data class AvailabilityProbe(
         val generation: Long,
         val expectedStatus: TunnelStatusPublication,
+        val availableStatus: TunnelStatus,
     )
 }
+
+/** Prevents availability publications from acknowledging or racing locally owned work. */
+internal fun provisioningRefreshAllowed(
+    importInProgress: Boolean,
+    storageOperationInProgress: Boolean,
+    connectRequested: Boolean,
+    pendingVpnServiceCommand: VpnServiceCommand?,
+): Boolean = !importInProgress &&
+    !storageOperationInProgress &&
+    !connectRequested &&
+    pendingVpnServiceCommand == null

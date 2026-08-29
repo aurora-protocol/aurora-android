@@ -88,7 +88,15 @@ an unexpired entry was present. An empty or unreadable store requires
 provisioning, while a retained expired entry receives its own classification:
 Connect remains blocked, but Import and explicit Remove remain available. The
 result is revision- and generation-gated so it cannot overwrite a newer tunnel
-lifecycle publication or an import/removal storage transition.
+lifecycle publication or an import/removal storage transition. After the main
+screen has first reused that startup result, each later resume rechecks a ready
+or retryable pre-consumption reservation away from the UI thread. A valid entry
+preserves the prior ready or failed classification, while an entry that expired
+during backgrounding immediately disables Connect. The resumed check uses an
+atomic status transition plus the same revision and generation gates, so it
+cannot overwrite newer connection or storage work. Pending permission, service
+command, import, or removal work suppresses the check, preventing its status
+publication from being mistaken for lifecycle-command acknowledgement.
 Consumption repeats the wall-clock expiry check atomically with the storage
 operation. An entry that expires after startup is therefore never returned to
 the native session; it remains encrypted and unconsumed, while the lifecycle

@@ -3,6 +3,7 @@ package org.aurora.protocol.android
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -101,6 +102,17 @@ class VpnTunnelStatusTest {
         assertFalse(channel.publishIfCurrent(expected, TunnelStatus.PROVISIONING_REQUIRED))
 
         assertEquals(TunnelStatusPublication(TunnelStatus.CHECKING_PROVISIONING, 1), channel.publication)
+    }
+
+    @Test
+    fun `conditional publication returns its exact revision for chained work`() {
+        val channel = VpnTunnelStatus()
+        val expected = channel.publication
+
+        val checking = channel.publishIfCurrentAndGet(expected, TunnelStatus.CHECKING_PROVISIONING)
+
+        assertEquals(TunnelStatusPublication(TunnelStatus.CHECKING_PROVISIONING, 1), checking)
+        assertNull(channel.publishIfCurrentAndGet(expected, TunnelStatus.PROVISIONING_REQUIRED))
     }
 
     @Test

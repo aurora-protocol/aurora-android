@@ -140,6 +140,15 @@ class AuroraActivity : Activity() {
         // preserving local feedback when no newer publication exists.
         renderTunnelStatus(observation.publication)
         statusObserver = observation.unsubscribe
+        val mayRefreshProvisioning = provisioningRefreshAllowed(
+            importInProgress = requestState.importInProgress,
+            storageOperationInProgress = storageOperationInProgress,
+            connectRequested = requestState.connectRequested,
+            pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
+        )
+        (application as AuroraApplication).provisioningAvailability.onMainScreenResumed(
+            refreshAllowed = mayRefreshProvisioning,
+        )
     }
 
     override fun onPause() {

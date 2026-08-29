@@ -68,6 +68,31 @@ class VpnTunnelStatusTest {
     }
 
     @Test
+    fun `unchanged status publication acknowledges a command exactly once`() {
+        val channel = VpnTunnelStatus()
+        val observed = mutableListOf<TunnelStatusPublication>()
+        channel.observeCurrentPublication(observed::add)
+        val beforeCommand = channel.publication
+
+        assertTrue(channel.publishCurrentIfUnchanged(beforeCommand.revision))
+        assertFalse(channel.publishCurrentIfUnchanged(beforeCommand.revision))
+
+        assertEquals(TunnelStatus.IDLE, channel.status)
+        assertEquals(listOf(TunnelStatusPublication(TunnelStatus.IDLE, 1)), observed)
+    }
+
+    @Test
+    fun `lifecycle transition wins over unchanged command acknowledgement`() {
+        val channel = VpnTunnelStatus()
+        val beforeCommand = channel.publication
+
+        channel.publish(TunnelStatus.CONNECTING)
+
+        assertFalse(channel.publishCurrentIfUnchanged(beforeCommand.revision))
+        assertEquals(TunnelStatusPublication(TunnelStatus.CONNECTING, 1), channel.publication)
+    }
+
+    @Test
     fun `revision distinguishes stale callbacks after an away and back transition`() {
         val channel = VpnTunnelStatus()
         val initial = channel.publication

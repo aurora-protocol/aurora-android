@@ -65,10 +65,15 @@ class AuroraVpnService : VpnService() {
     private val lifecycle = vpnProcessLifecycle.acquire()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (vpnServiceCommand(intent?.action)) {
+        val command = vpnServiceCommand(intent?.action)
+        val statusBeforeCommand = vpnTunnelStatus.publication
+        when (command) {
             VpnServiceCommand.CONNECT -> startTunnel(startId)
             VpnServiceCommand.DISCONNECT -> stopTunnel(stopService = true, serviceStartId = startId)
             null -> stopSelfResult(startId)
+        }
+        if (command != null) {
+            vpnTunnelStatus.publishCurrentIfUnchanged(statusBeforeCommand.revision)
         }
         return Service.START_NOT_STICKY
     }

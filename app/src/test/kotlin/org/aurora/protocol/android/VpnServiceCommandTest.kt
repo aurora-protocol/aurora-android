@@ -36,22 +36,67 @@ class VpnServiceCommandTest {
     @Test
     fun `pending service request waits for a newer status publication`() {
         val tracker = VpnServiceRequestTracker()
-        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 7)
+        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 7, currentUptimeMillis = 100)
 
-        assertFalse(tracker.clearIfSuperseded(currentStatusRevision = 7))
-        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 7), tracker.pending)
-        assertTrue(tracker.clearIfSuperseded(currentStatusRevision = 8))
+        assertFalse(tracker.clearIfAcknowledged(TunnelStatusPublication(TunnelStatus.IDLE, 7)))
+        assertEquals(
+            PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 7, 100 + vpnServiceRequestTimeoutMillis),
+            tracker.pending,
+        )
+        assertTrue(tracker.clearIfAcknowledged(TunnelStatusPublication(TunnelStatus.CONNECTING, 8)))
+        assertNull(tracker.pending)
+    }
+
+    @Test
+    fun `unacknowledged service request expires only at its monotonic deadline`() {
+        val tracker = VpnServiceRequestTracker()
+        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 7, currentUptimeMillis = 100)
+
+        assertNull(
+            tracker.expireIfUnacknowledged(
+                currentStatus = TunnelStatusPublication(TunnelStatus.IDLE, 7),
+                currentUptimeMillis = 100 + vpnServiceRequestTimeoutMillis - 1,
+            ),
+        )
+        assertEquals(
+            VpnServiceCommand.CONNECT,
+            tracker.expireIfUnacknowledged(
+                currentStatus = TunnelStatusPublication(TunnelStatus.IDLE, 7),
+                currentUptimeMillis = 100 + vpnServiceRequestTimeoutMillis,
+            ),
+        )
+        assertNull(tracker.pending)
+    }
+
+    @Test
+    fun `disconnect waits through preceding connection progress`() {
+        val tracker = VpnServiceRequestTracker()
+        tracker.begin(VpnServiceCommand.DISCONNECT, currentStatusRevision = 7, currentUptimeMillis = 100)
+
+        assertFalse(
+            tracker.clearIfAcknowledged(TunnelStatusPublication(TunnelStatus.CONNECTED, 8)),
+        )
+        assertEquals(
+            PendingVpnServiceCommand(VpnServiceCommand.DISCONNECT, 7, 100 + vpnServiceRequestTimeoutMillis),
+            tracker.pending,
+        )
+        assertTrue(
+            tracker.clearIfAcknowledged(TunnelStatusPublication(TunnelStatus.DISCONNECTING, 9)),
+        )
         assertNull(tracker.pending)
     }
 
     @Test
     fun `new command replaces the prior request at the current revision`() {
         val tracker = VpnServiceRequestTracker()
-        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 4)
+        tracker.begin(VpnServiceCommand.CONNECT, currentStatusRevision = 4, currentUptimeMillis = 100)
 
-        tracker.begin(VpnServiceCommand.DISCONNECT, currentStatusRevision = 4)
+        tracker.begin(VpnServiceCommand.DISCONNECT, currentStatusRevision = 4, currentUptimeMillis = 200)
 
-        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.DISCONNECT, 4), tracker.pending)
+        assertEquals(
+            PendingVpnServiceCommand(VpnServiceCommand.DISCONNECT, 4, 200 + vpnServiceRequestTimeoutMillis),
+            tracker.pending,
+        )
     }
 
     @Test
@@ -59,6 +104,7 @@ class VpnServiceCommandTest {
         val restored = VpnServiceRequestTracker(
             restoredCommand = VpnServiceCommand.CONNECT,
             restoredAfterStatusRevision = 3,
+            restoredTimeoutAtUptimeMillis = 500,
             restoredProcessSessionId = "same-process",
             currentStatusRevision = 3,
             currentProcessSessionId = "same-process",
@@ -66,6 +112,7 @@ class VpnServiceCommandTest {
         val newerStatus = VpnServiceRequestTracker(
             restoredCommand = VpnServiceCommand.CONNECT,
             restoredAfterStatusRevision = 3,
+            restoredTimeoutAtUptimeMillis = 500,
             restoredProcessSessionId = "same-process",
             currentStatusRevision = 4,
             currentProcessSessionId = "same-process",
@@ -73,12 +120,13 @@ class VpnServiceCommandTest {
         val newProcess = VpnServiceRequestTracker(
             restoredCommand = VpnServiceCommand.CONNECT,
             restoredAfterStatusRevision = 3,
+            restoredTimeoutAtUptimeMillis = 500,
             restoredProcessSessionId = "old-process",
             currentStatusRevision = 3,
             currentProcessSessionId = "new-process",
         )
 
-        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 3), restored.pending)
+        assertEquals(PendingVpnServiceCommand(VpnServiceCommand.CONNECT, 3, 500), restored.pending)
         assertNull(newerStatus.pending)
         assertNull(newProcess.pending)
     }

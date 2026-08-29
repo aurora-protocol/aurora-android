@@ -43,6 +43,26 @@ internal class VpnTunnelStatus {
         }
     }
 
+    /** Publishes the current state as a command acknowledgement unless another transition won the race. */
+    fun publishCurrentIfUnchanged(expectedRevision: Long): Boolean {
+        val publication = synchronized(lock) {
+            if (revision != expectedRevision) {
+                null
+            } else {
+                val next = TunnelStatusPublication(current, ++revision)
+                next to observers.toList()
+            }
+        } ?: return false
+        publication.second.forEach { observer ->
+            try {
+                observer(publication.first)
+            } catch (_: Throwable) {
+                // Status observation must never break lifecycle publication.
+            }
+        }
+        return true
+    }
+
     /** Registers [observer] for future publications; returns an unsubscribe action. */
     fun observe(observer: (TunnelStatus) -> Unit): () -> Unit {
         return observeCurrent(observer).unsubscribe

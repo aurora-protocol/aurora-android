@@ -134,7 +134,11 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
    progress, closing the gap in which permission state has cleared but the
    service has not published connecting or disconnecting yet. The pending
    command survives screen recreation only within the same process and status
-   revision, preventing both duplicate commands and stale process-restoration
+   revision. A command that produces no lifecycle transition republishes the
+   current classification as an acknowledgement. If the service never handles
+   the command, a monotonic ten-second deadline clears the pending UI lock and
+   exposes an explicit retry rather than leaving the screen permanently busy.
+   These rules prevent both duplicate commands and stale process-restoration
    state. Terminal outcomes replace transitional request states and the UI
    never displays error material.
 

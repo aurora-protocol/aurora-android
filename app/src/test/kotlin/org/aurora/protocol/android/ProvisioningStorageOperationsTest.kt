@@ -94,4 +94,32 @@ class ProvisioningStorageOperationsTest {
 
         assertEquals(2, updates.size)
     }
+
+    @Test
+    fun commandWorkFailureStillReleasesLeaseAndRunsCompletion() {
+        val operations = ProvisioningStorageOperations()
+        val lease = checkNotNull(operations.begin(ProvisioningStorageOperation.REMOVING))
+        var workRuns = 0
+        var completionRuns = 0
+
+        val command = ProvisioningStorageCommand(
+            operations = operations,
+            lease = lease,
+            work = {
+                workRuns++
+                throw IllegalStateException("simulated failure")
+            },
+            afterCompletion = { completionRuns++ },
+        )
+
+        try {
+            command.run()
+        } catch (_: IllegalStateException) {
+            // Work failures are surfaced at the call site; lease cleanup must still run.
+        }
+
+        assertEquals(1, workRuns)
+        assertEquals(1, completionRuns)
+        assertNull(operations.publication.operation)
+    }
 }

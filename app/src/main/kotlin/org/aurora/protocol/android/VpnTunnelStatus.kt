@@ -18,20 +18,25 @@ internal class VpnTunnelStatus {
     private val lock = Any()
     // Identity semantics: adapted callable references hash their bound receiver,
     // which may mutate between registration and removal.
-    private val observers = mutableListOf<(TunnelStatus) -> Unit>()
+    private val observers = mutableListOf<(TunnelStatusPublication) -> Unit>()
     private var current = TunnelStatus.IDLE
+    private var revision = 0L
 
     val status: TunnelStatus
         get() = synchronized(lock) { current }
 
+    val publication: TunnelStatusPublication
+        get() = synchronized(lock) { TunnelStatusPublication(current, revision) }
+
     fun publish(update: TunnelStatus) {
-        val targets = synchronized(lock) {
+        val (published, targets) = synchronized(lock) {
             current = update
-            observers.toList()
+            val next = TunnelStatusPublication(update, ++revision)
+            next to observers.toList()
         }
         targets.forEach { observer ->
             try {
-                observer(update)
+                observer(published)
             } catch (_: Throwable) {
                 // Status observation must never break lifecycle publication.
             }
@@ -49,11 +54,19 @@ internal class VpnTunnelStatus {
      * transition after the snapshot they render.
      */
     fun observeCurrent(observer: (TunnelStatus) -> Unit): TunnelStatusObservation {
+        val observation = observeCurrentPublication { update -> observer(update.status) }
+        return TunnelStatusObservation(observation.publication.status, observation.unsubscribe)
+    }
+
+    /** Atomically registers [observer] and captures the current revisioned publication. */
+    fun observeCurrentPublication(
+        observer: (TunnelStatusPublication) -> Unit,
+    ): TunnelStatusPublicationObservation {
         val initial = synchronized(lock) {
             observers += observer
-            current
+            TunnelStatusPublication(current, revision)
         }
-        return TunnelStatusObservation(initial) {
+        return TunnelStatusPublicationObservation(initial) {
             synchronized(lock) {
                 observers.removeIf { it === observer }
             }
@@ -65,6 +78,36 @@ internal data class TunnelStatusObservation(
     val status: TunnelStatus,
     val unsubscribe: () -> Unit,
 )
+
+internal data class TunnelStatusPublication(
+    val status: TunnelStatus,
+    val revision: Long,
+)
+
+internal data class TunnelStatusPublicationObservation(
+    val publication: TunnelStatusPublication,
+    val unsubscribe: () -> Unit,
+)
+
+/** UI-side ordering gate for revisioned status callbacks and newer local feedback. */
+internal class TunnelStatusRenderState(initial: TunnelStatusPublication) {
+    private var handledRevision = initial.revision
+
+    fun markLocalFeedback(current: TunnelStatusPublication) {
+        handledRevision = maxOf(handledRevision, current.revision)
+    }
+
+    fun consumeIfCurrent(
+        candidate: TunnelStatusPublication,
+        current: TunnelStatusPublication,
+    ): Boolean {
+        if (candidate != current || candidate.revision <= handledRevision) {
+            return false
+        }
+        handledRevision = candidate.revision
+        return true
+    }
+}
 
 internal fun tunnelStatusText(status: TunnelStatus): Int = when (status) {
     TunnelStatus.IDLE -> R.string.status_ready

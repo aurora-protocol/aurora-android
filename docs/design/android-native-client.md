@@ -124,12 +124,14 @@ uses `clear` rather than `purge` so local spent-hint history remains intact.
    failed. The
    activity atomically subscribes and captures the current classification while
    resumed, so a transition cannot fall between its catch-up read and observer
-   registration. Generation-gated callbacks from an earlier screen lifecycle
-   cannot overwrite newer local feedback after pause/resume. It renders only
-   the latest classification and derives the connect/disconnect controls from
-   it, preventing duplicate starts while a tunnel is connecting or connected.
-   Terminal outcomes replace transitional request states and the UI never
-   displays error material.
+   registration. Every publication carries a process-local monotonic revision,
+   so an old idle callback cannot become current again after an
+   idle-to-connecting-to-idle cycle. Generation-gated callbacks from an earlier
+   screen lifecycle and publications superseded by newer local feedback cannot
+   overwrite that feedback. The activity renders only the latest publication
+   and derives the connect/disconnect controls from it, preventing duplicate
+   starts while a tunnel is connecting or connected. Terminal outcomes replace
+   transitional request states and the UI never displays error material.
 
 No Android-owned socket is used for carrier traffic. The Core native runtime
 owns that traffic and operates under the application UID excluded in step 5.

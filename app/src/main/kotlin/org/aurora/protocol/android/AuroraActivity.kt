@@ -44,15 +44,15 @@ class AuroraActivity : Activity() {
     private var storageOperationInProgress = false
     private var statusObserver: (() -> Unit)? = null
     private var statusObserverGeneration = 0L
-    private var renderedTunnelStatus: TunnelStatus? = null
+    private lateinit var tunnelStatusRenderState: TunnelStatusRenderState
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         requestState = ConnectionRequestState(savedInstanceState?.getBoolean(savedConnectionRequest) == true)
-        val initialTunnelStatus = vpnTunnelStatus.status
-        renderedTunnelStatus = initialTunnelStatus
-        setContentView(buildContent(initialTunnelStatus))
+        val initialTunnelStatus = vpnTunnelStatus.publication
+        tunnelStatusRenderState = TunnelStatusRenderState(initialTunnelStatus)
+        setContentView(buildContent(initialTunnelStatus.status))
         refreshControls()
     }
 
@@ -64,21 +64,16 @@ class AuroraActivity : Activity() {
     override fun onResume() {
         super.onResume()
         val generation = ++statusObserverGeneration
-        val observation = vpnTunnelStatus.observeCurrent { update ->
+        val observation = vpnTunnelStatus.observeCurrentPublication { update ->
             runOnUiThread {
                 if (generation == statusObserverGeneration) {
                     renderTunnelStatus(update)
                 }
             }
         }
-        // Catch up only when the classification changed since the last tunnel
-        // publication this screen rendered, so local request/import feedback
-        // shown while the tunnel stayed idle is not overwritten.
-        val current = observation.status
-        val rendered = renderedTunnelStatus
-        if (rendered != null && current != rendered) {
-            renderTunnelStatus(current)
-        }
+        // Revision gating catches even an away-and-back transition while
+        // preserving local feedback when no newer publication exists.
+        renderTunnelStatus(observation.publication)
         statusObserver = observation.unsubscribe
     }
 
@@ -108,7 +103,7 @@ class AuroraActivity : Activity() {
         if (resultCode == RESULT_OK) {
             startConnection()
         } else {
-            status.setText(R.string.status_vpn_permission_required)
+            showLocalStatus(R.string.status_vpn_permission_required)
         }
     }
 
@@ -122,7 +117,7 @@ class AuroraActivity : Activity() {
             grantResults.size != permissions.size
         ) {
             requestState.cancelConnectionRequest()
-            status.setText(R.string.status_permission_request_failed)
+            showLocalStatus(R.string.status_permission_request_failed)
             refreshControls()
             return
         }
@@ -226,7 +221,7 @@ class AuroraActivity : Activity() {
         if (!ProvisioningImport.hasValidEncodedLength(editable.length)) {
             editable.clear()
             requestState.completeImport()
-            status.setText(R.string.status_import_failed)
+            showLocalStatus(R.string.status_import_failed)
             refreshControls()
             return
         }
@@ -235,7 +230,7 @@ class AuroraActivity : Activity() {
         synchronized(importInputLock) {
             pendingImport = encoded
         }
-        status.setText(R.string.status_importing)
+        showLocalStatus(R.string.status_importing)
         refreshControls()
         try {
             worker.execute {
@@ -276,7 +271,7 @@ class AuroraActivity : Activity() {
                         return@runOnUiThread
                     }
                     requestState.completeImport()
-                    status.setText(message)
+                    showLocalStatus(message)
                     refreshControls()
                 }
             }
@@ -288,7 +283,7 @@ class AuroraActivity : Activity() {
                 encoded.fill('\u0000')
             }
             requestState.completeImport()
-            status.setText(R.string.status_import_failed)
+            showLocalStatus(R.string.status_import_failed)
             refreshControls()
         }
     }
@@ -297,7 +292,7 @@ class AuroraActivity : Activity() {
         if (!requestState.beginConnectionRequest()) {
             return
         }
-        status.setText(R.string.status_waiting_for_permission)
+        showLocalStatus(R.string.status_waiting_for_permission)
         refreshControls()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -327,7 +322,7 @@ class AuroraActivity : Activity() {
             return
         }
         storageOperationInProgress = true
-        status.setText(R.string.status_removing_provisioning)
+        showLocalStatus(R.string.status_removing_provisioning)
         refreshControls()
         try {
             worker.execute {
@@ -343,14 +338,14 @@ class AuroraActivity : Activity() {
                         return@runOnUiThread
                     }
                     storageOperationInProgress = false
-                    status.setText(message)
+                    showLocalStatus(message)
                     refreshControls()
                 }
             }
         } catch (error: RejectedExecutionException) {
             AuroraLog.debug("provisioning removal dispatch", error)
             storageOperationInProgress = false
-            status.setText(R.string.status_remove_provisioning_failed)
+            showLocalStatus(R.string.status_remove_provisioning_failed)
             refreshControls()
         }
     }
@@ -367,7 +362,7 @@ class AuroraActivity : Activity() {
                     startConnection()
                 }
             } else {
-                status.setText(R.string.status_waiting_for_permission)
+                showLocalStatus(R.string.status_waiting_for_permission)
                 startActivityForResult(preparation, requestVpnPermission)
             }
         } catch (error: RuntimeException) {
@@ -378,10 +373,10 @@ class AuroraActivity : Activity() {
     private fun startConnection() {
         val failure = runVpnServiceRequest { AuroraVpnService.connect(this) }
         if (failure == null) {
-            status.setText(R.string.status_connecting)
+            showLocalStatus(R.string.status_connecting)
         } else {
             AuroraLog.debug("VPN service start", failure)
-            status.setText(R.string.status_connection_failed)
+            showLocalStatus(R.string.status_connection_failed)
         }
     }
 
@@ -390,27 +385,31 @@ class AuroraActivity : Activity() {
         refreshControls()
         val failure = runVpnServiceRequest { AuroraVpnService.disconnect(this) }
         if (failure == null) {
-            status.setText(R.string.status_disconnect_requested)
+            showLocalStatus(R.string.status_disconnect_requested)
         } else {
             AuroraLog.debug("VPN service stop", failure)
-            status.setText(R.string.status_disconnect_failed)
+            showLocalStatus(R.string.status_disconnect_failed)
         }
     }
 
     private fun failConnectionRequest(operation: String, error: RuntimeException) {
         AuroraLog.debug(operation, error)
         requestState.cancelConnectionRequest()
-        status.setText(R.string.status_connection_failed)
+        showLocalStatus(R.string.status_connection_failed)
         refreshControls()
     }
 
-    private fun renderTunnelStatus(update: TunnelStatus) {
-        if (update != vpnTunnelStatus.status) {
+    private fun renderTunnelStatus(update: TunnelStatusPublication) {
+        if (!tunnelStatusRenderState.consumeIfCurrent(update, vpnTunnelStatus.publication)) {
             return
         }
-        renderedTunnelStatus = update
-        status.setText(tunnelStatusText(update))
+        status.setText(tunnelStatusText(update.status))
         refreshControls()
+    }
+
+    private fun showLocalStatus(message: Int) {
+        tunnelStatusRenderState.markLocalFeedback(vpnTunnelStatus.publication)
+        status.setText(message)
     }
 
     private fun refreshControls() {

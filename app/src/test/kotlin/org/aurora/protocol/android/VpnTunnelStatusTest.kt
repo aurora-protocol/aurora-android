@@ -1,7 +1,9 @@
 package org.aurora.protocol.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VpnTunnelStatusTest {
@@ -63,6 +65,45 @@ class VpnTunnelStatusTest {
 
         assertEquals(TunnelStatus.CONNECTED, channel.status)
         assertEquals(listOf(TunnelStatus.CONNECTED), observed)
+    }
+
+    @Test
+    fun `revision distinguishes stale callbacks after an away and back transition`() {
+        val channel = VpnTunnelStatus()
+        val initial = channel.publication
+        val renderState = TunnelStatusRenderState(initial)
+        val observed = mutableListOf<TunnelStatusPublication>()
+        val observation = channel.observeCurrentPublication(observed::add)
+
+        channel.publish(TunnelStatus.IDLE)
+        val staleIdle = channel.publication
+        channel.publish(TunnelStatus.CONNECTING)
+        channel.publish(TunnelStatus.IDLE)
+        val currentIdle = channel.publication
+
+        assertEquals(initial, observation.publication)
+        assertEquals(TunnelStatus.IDLE, staleIdle.status)
+        assertEquals(TunnelStatus.IDLE, currentIdle.status)
+        assertNotEquals(staleIdle, currentIdle)
+        assertEquals(listOf(1L, 2L, 3L), observed.map { it.revision })
+        assertFalse(renderState.consumeIfCurrent(staleIdle, currentIdle))
+        assertTrue(renderState.consumeIfCurrent(currentIdle, currentIdle))
+        assertFalse(renderState.consumeIfCurrent(currentIdle, currentIdle))
+        observation.unsubscribe()
+    }
+
+    @Test
+    fun `local feedback suppresses only publications that already happened`() {
+        val channel = VpnTunnelStatus()
+        val renderState = TunnelStatusRenderState(channel.publication)
+        channel.publish(TunnelStatus.CONNECTING)
+        val alreadyPublished = channel.publication
+
+        renderState.markLocalFeedback(alreadyPublished)
+
+        assertFalse(renderState.consumeIfCurrent(alreadyPublished, channel.publication))
+        channel.publish(TunnelStatus.CONNECTED)
+        assertTrue(renderState.consumeIfCurrent(channel.publication, channel.publication))
     }
 
     @Test

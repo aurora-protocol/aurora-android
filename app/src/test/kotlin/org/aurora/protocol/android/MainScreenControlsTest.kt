@@ -1,6 +1,8 @@
 package org.aurora.protocol.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MainScreenControlsTest {
@@ -238,6 +240,183 @@ class MainScreenControlsTest {
                 showProgress = true,
             ),
             mainScreenControls(false, true, false, null, true, TunnelStatus.IDLE),
+        )
+    }
+
+    @Test
+    fun whitespaceOnlyInputDoesNotEnableImport() {
+        assertFalse(hasProvisioningInput(""))
+        assertFalse(hasProvisioningInput(" \n\t"))
+        assertTrue(hasProvisioningInput("abc"))
+        assertTrue(hasProvisioningInput(" a"))
+    }
+
+    @Test
+    fun removeBusyLabelAppliesOnlyWhileRemoving() {
+        val importing = mainScreenActionCopies(
+            false,
+            ProvisioningStorageOperation.IMPORTING,
+            false,
+            null,
+            TunnelStatus.IDLE,
+        )
+        assertEquals(MainScreenActionCopy.REMOVE, importing.removeAction)
+        assertEquals(MainScreenActionCopy.IMPORT, importing.importAction)
+
+        val importingRequested = mainScreenActionCopies(
+            true,
+            ProvisioningStorageOperation.IMPORTING,
+            false,
+            null,
+            TunnelStatus.IDLE,
+        )
+        assertEquals(MainScreenActionCopy.IMPORTING, importingRequested.importAction)
+        assertEquals(MainScreenActionCopy.REMOVE, importingRequested.removeAction)
+
+        val removing = mainScreenActionCopies(
+            false,
+            ProvisioningStorageOperation.REMOVING,
+            false,
+            null,
+            TunnelStatus.IDLE,
+        )
+        assertEquals(MainScreenActionCopy.REMOVING, removing.removeAction)
+    }
+
+    @Test
+    fun connectAndDisconnectActionCopiesFollowPendingCommands() {
+        assertEquals(
+            MainScreenActionCopy.CONNECTING,
+            mainScreenActionCopies(false, null, false, VpnServiceCommand.CONNECT, TunnelStatus.IDLE).connectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.WAITING_FOR_PERMISSION,
+            mainScreenActionCopies(false, null, true, null, TunnelStatus.IDLE).connectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.DISCONNECTING,
+            mainScreenActionCopies(false, null, false, VpnServiceCommand.DISCONNECT, TunnelStatus.CONNECTED)
+                .disconnectAction,
+        )
+    }
+
+    @Test
+    fun disconnectCopyCancelsInProgressConnectionInsteadOfClaimingAnActiveTunnel() {
+        assertTrue(
+            isDisconnectCancelingConnection(
+                connectRequested = true,
+                pendingVpnServiceCommand = null,
+                tunnelStatus = TunnelStatus.IDLE,
+            ),
+        )
+        assertTrue(
+            isDisconnectCancelingConnection(
+                connectRequested = false,
+                pendingVpnServiceCommand = VpnServiceCommand.CONNECT,
+                tunnelStatus = TunnelStatus.IDLE,
+            ),
+        )
+        assertTrue(
+            isDisconnectCancelingConnection(
+                connectRequested = false,
+                pendingVpnServiceCommand = null,
+                tunnelStatus = TunnelStatus.CONNECTING,
+            ),
+        )
+        assertFalse(
+            isDisconnectCancelingConnection(
+                connectRequested = false,
+                pendingVpnServiceCommand = null,
+                tunnelStatus = TunnelStatus.CONNECTED,
+            ),
+        )
+        assertEquals(
+            MainScreenActionCopy.CANCEL,
+            mainScreenActionCopies(false, null, true, null, TunnelStatus.IDLE).disconnectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.CANCEL,
+            mainScreenActionCopies(false, null, false, VpnServiceCommand.CONNECT, TunnelStatus.IDLE)
+                .disconnectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.CANCEL,
+            mainScreenActionCopies(false, null, false, null, TunnelStatus.CONNECTING).disconnectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.DISCONNECT,
+            mainScreenActionCopies(false, null, false, null, TunnelStatus.CONNECTED).disconnectAction,
+        )
+        assertEquals(R.string.action_cancel, mainScreenActionCopyResource(MainScreenActionCopy.CANCEL))
+        assertEquals(R.string.action_cancel_hint, mainScreenActionHintResource(MainScreenActionCopy.CANCEL))
+    }
+
+    @Test
+    fun failedTunnelUsesRetryConnectCopy() {
+        assertEquals(
+            MainScreenActionCopy.RETRY,
+            mainScreenActionCopies(false, null, false, null, TunnelStatus.FAILED).connectAction,
+        )
+        assertEquals(
+            MainScreenActionCopy.CONNECT,
+            mainScreenActionCopies(false, null, false, null, TunnelStatus.IDLE).connectAction,
+        )
+        assertEquals(R.string.action_retry, mainScreenActionCopyResource(MainScreenActionCopy.RETRY))
+        assertEquals(R.string.action_retry_hint, mainScreenActionHintResource(MainScreenActionCopy.RETRY))
+        assertEquals(
+            R.string.action_waiting_for_permission_hint,
+            mainScreenActionHintResource(MainScreenActionCopy.WAITING_FOR_PERMISSION),
+        )
+        assertEquals(
+            R.string.action_connecting_hint,
+            mainScreenActionHintResource(MainScreenActionCopy.CONNECTING),
+        )
+        assertEquals(
+            R.string.action_disconnect_hint,
+            mainScreenActionHintResource(MainScreenActionCopy.DISCONNECT),
+        )
+    }
+
+    @Test
+    fun storageIdleDoesNotRestoreTunnelStatusUntilCompletionMessage() {
+        assertTrue(storageIdleRestoresTunnelStatus(null))
+        assertFalse(storageIdleRestoresTunnelStatus(ProvisioningStorageOperation.IMPORTING))
+        assertFalse(storageIdleRestoresTunnelStatus(ProvisioningStorageOperation.REMOVING))
+    }
+
+    @Test
+    fun importFieldErrorMatchesInvalidSaveAndGenericFailuresOnly() {
+        assertTrue(
+            shouldShowImportFieldError(
+                10,
+                invalidImportMessageId = 10,
+                saveFailedMessageId = 20,
+                failedMessageId = 30,
+            ),
+        )
+        assertTrue(
+            shouldShowImportFieldError(
+                20,
+                invalidImportMessageId = 10,
+                saveFailedMessageId = 20,
+                failedMessageId = 30,
+            ),
+        )
+        assertTrue(
+            shouldShowImportFieldError(
+                30,
+                invalidImportMessageId = 10,
+                saveFailedMessageId = 20,
+                failedMessageId = 30,
+            ),
+        )
+        assertFalse(
+            shouldShowImportFieldError(
+                40,
+                invalidImportMessageId = 10,
+                saveFailedMessageId = 20,
+                failedMessageId = 30,
+            ),
         )
     }
 }

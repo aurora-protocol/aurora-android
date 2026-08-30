@@ -239,6 +239,31 @@ class NativeTunnelRuntimeTest {
     }
 
     @Test
+    fun rejectsAndClearsMalformedTunnelInputBeforeCoreIngress() {
+        fun assertRejected(packet: ByteArray) {
+            val device = FakeTunnelPacketDevice(packet)
+            val session = FakeNativePacketSession()
+            val terminalFailures = LinkedBlockingQueue<Throwable>()
+            val runtime = NativeTunnelRuntime(session, device) { terminalFailures.offer(it) }
+
+            runtime.start()
+
+            try {
+                assertTrue(terminalFailures.poll(2, TimeUnit.SECONDS) is IllegalArgumentException)
+                assertArrayEquals(ByteArray(packet.size), packet)
+                assertTrue(device.written.isEmpty())
+            } finally {
+                runtime.close()
+            }
+            assertTrue(session.closed)
+            assertTrue(device.closed)
+        }
+
+        assertRejected(ByteArray(0))
+        assertRejected(ByteArray(NativeTunnelRuntime.maximumPacketBytes + 1) { 0x45 })
+    }
+
+    @Test
     fun clearsEveryImmediatePacketWhenOneIsRejectedAsInvalid() {
         val ingress = byteArrayOf(0x45)
         val valid = byteArrayOf(0x60, 0x01)

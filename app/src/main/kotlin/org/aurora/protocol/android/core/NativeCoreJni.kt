@@ -81,7 +81,8 @@ internal object NativeCoreJni : NativeSessionCore {
             NativeCoreResponse.decode(raw).use { response ->
                 response.status == CoreStatus.OK && response.payload.isEmpty()
             }
-        } catch (_: IllegalArgumentException) {
+        } catch (error: IllegalArgumentException) {
+            AuroraLog.debug("configure native trust", error)
             false
         }
     }
@@ -92,7 +93,8 @@ internal object NativeCoreJni : NativeSessionCore {
             NativeCoreResponse.decode(raw).use { response ->
                 response.status == CoreStatus.OK && response.payload.isEmpty()
             }
-        } catch (_: IllegalArgumentException) {
+        } catch (error: IllegalArgumentException) {
+            AuroraLog.debug("${operation.name} response decode", error)
             false
         }
     }

@@ -7,3 +7,7 @@ app/build/
 app/.cxx/
 app/src/main/jniLibs/
 app/src/main/assets/AuroraSignedSeedTrust.bin
+
+# Lab-only device driver (contains real provisioning material)
+app/src/androidTest/assets/import-code.txt
+app/src/androidTest/kotlin/org/aurora/protocol/android/LabDriveTest.kt

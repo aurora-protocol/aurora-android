@@ -11,8 +11,7 @@ class ProvisioningStorageOperationsTest {
     fun beginsAndCompletesAStorageOperationLease() {
         val operations = ProvisioningStorageOperations()
 
-        val lease = operations.begin(ProvisioningStorageOperation.REMOVING)
-        assertTrue(lease != null)
+        val lease = checkNotNull(operations.begin(ProvisioningStorageOperation.REMOVING))
 
         assertNull(operations.begin(ProvisioningStorageOperation.IMPORTING))
         assertEquals(ProvisioningStorageOperation.REMOVING, operations.publication.operation)
@@ -20,8 +19,7 @@ class ProvisioningStorageOperationsTest {
         assertTrue(operations.complete(lease))
         assertNull(operations.publication.operation)
 
-        val nextLease = operations.begin(ProvisioningStorageOperation.IMPORTING)
-        assertTrue(nextLease != null)
+        val nextLease = checkNotNull(operations.begin(ProvisioningStorageOperation.IMPORTING))
         assertTrue(operations.complete(nextLease))
     }
 
@@ -78,17 +76,20 @@ class ProvisioningStorageOperationsTest {
             updates += update
         }
 
-        assertEquals(1, updates.size)
-        assertNull(updates[0].operation)
-        assertEquals(0L, updates[0].revision)
+        assertTrue(updates.isEmpty())
+        assertNull(observation.publication.operation)
+        assertEquals(0L, observation.publication.revision)
 
         val lease = checkNotNull(operations.begin(ProvisioningStorageOperation.REMOVING))
+        assertEquals(1, updates.size)
+        assertEquals(ProvisioningStorageOperation.REMOVING, updates[0].operation)
+        assertEquals(1L, updates[0].revision)
+
+        assertTrue(operations.complete(lease))
         assertEquals(2, updates.size)
-        assertEquals(ProvisioningStorageOperation.REMOVING, updates[1].operation)
-        assertEquals(1L, updates[1].revision)
+        assertNull(updates[1].operation)
 
         observation.unsubscribe()
-        operations.complete(lease)
         val leaseAfter = checkNotNull(operations.begin(ProvisioningStorageOperation.IMPORTING))
         operations.complete(leaseAfter)
 

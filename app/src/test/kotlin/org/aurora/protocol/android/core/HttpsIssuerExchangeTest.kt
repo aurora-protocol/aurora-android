@@ -44,7 +44,10 @@ class HttpsIssuerExchangeTest {
 
     @Test
     fun rejectsNonSuccessfulAndOversizedIssuerResponses() {
-        val rejected = FakeConnection(IssuerHttpResponse(503, 0, null, "application/octet-stream"))
+        val rejectedBody = CloseTrackingInputStream(byteArrayOf(0x50, 0x60))
+        val rejected = FakeConnection(
+            IssuerHttpResponse(503, 2, rejectedBody, "application/octet-stream"),
+        )
         val tooLarge = FakeConnection(
             IssuerHttpResponse(200, 1_048_577, ByteArrayInputStream(ByteArray(0)), "application/octet-stream"),
         )
@@ -56,7 +59,29 @@ class HttpsIssuerExchangeTest {
             assertThrows(IllegalArgumentException::class.java) { exchange.exchange(work) }
             assertThrows(IllegalArgumentException::class.java) { exchange.exchange(work) }
             assertTrue(rejected.closed)
+            assertTrue(rejectedBody.closed)
             assertTrue(tooLarge.closed)
+        } finally {
+            work.close()
+        }
+    }
+
+    @Test
+    fun rejectsOversizedUnknownLengthResponseAndScrubsTheReadBuffer() {
+        val body = ObservingByteArrayInputStream(
+            ByteArray(HttpsIssuerExchange.maximumIssuerResponseBytes + 1) { 0x5a },
+        )
+        val connection = FakeConnection(
+            IssuerHttpResponse(200, -1, body, "application/octet-stream"),
+        )
+        val exchange = HttpsIssuerExchange(IssuerHttpConnectionFactory { connection })
+        val work = NativeIssuerWork(7, URL("https://issuer.example"), "/assets/issue", byteArrayOf(0x30))
+
+        try {
+            val error = assertThrows(IllegalArgumentException::class.java) { exchange.exchange(work) }
+            assertEquals("issuer response exceeds size limit", error.message)
+            assertTrue(connection.closed)
+            assertTrue(requireNotNull(body.observedReadBuffer).all { it == 0.toByte() })
         } finally {
             work.close()
         }
@@ -684,6 +709,26 @@ class HttpsIssuerExchangeTest {
         override fun close() {
             closed = true
             throw IllegalStateException("response body cleanup failed")
+        }
+    }
+
+    private class CloseTrackingInputStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
+        var closed = false
+            private set
+
+        override fun close() {
+            closed = true
+            super.close()
+        }
+    }
+
+    private class ObservingByteArrayInputStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
+        var observedReadBuffer: ByteArray? = null
+            private set
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            observedReadBuffer = target
+            return super.read(target, offset, length)
         }
     }
 }

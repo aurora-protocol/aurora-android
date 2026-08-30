@@ -19,11 +19,12 @@ import org.aurora.protocol.android.core.NativePacketSession
 
 class VpnServiceLifecycleTest {
     @Test
-    fun `a stale generation stop is ignored and a repeated start shares the connection`() {
+    fun `a stale generation stop is ignored and only an active connection can share a start`() {
         val executor = Executors.newSingleThreadExecutor()
         val failures = ConcurrentLinkedQueue<Throwable>()
         val process = VpnProcessLifecycle(failures::add, executor)
         val lifecycle = process.acquire()
+        assertFalse(lifecycle.shareActiveStart(30))
         val generation = lifecycle.acceptedGeneration(31)
 
         try {
@@ -31,10 +32,11 @@ class VpnServiceLifecycleTest {
             assertFalse(lifecycle.teardownInProgress)
 
             assertEquals(VpnConnectionStart.Shared, lifecycle.start(32))
+            assertTrue(lifecycle.shareActiveStart(33))
             assertFalse(lifecycle.teardownInProgress)
 
             val stop = lifecycle.stop(expectedGeneration = generation) as VpnConnectionStop.Started
-            assertEquals(32, stop.serviceStartId)
+            assertEquals(33, stop.serviceStartId)
             lifecycle.finishLifecycleStop(stop.teardownId)
             lifecycle.discardConnectionWork(generation)
             assertTrue(awaitCondition { !lifecycle.teardownInProgress })
@@ -441,7 +443,8 @@ class VpnServiceLifecycleTest {
 
         try {
             assertTrue(joinerEntered.await(2, TimeUnit.SECONDS))
-            assertFalse(joinerReturned.await(200, TimeUnit.MILLISECONDS))
+            assertTrue(awaitCondition { joiner.state == Thread.State.WAITING })
+            assertEquals(1L, joinerReturned.count)
             assertEquals(1, delegate.closeCalls.get())
 
             delegate.allowClose.countDown()

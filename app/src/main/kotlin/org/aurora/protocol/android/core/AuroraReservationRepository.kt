@@ -91,6 +91,26 @@ internal class AuroraReservationRepository(
         storage.clear()
     }
 
+    /**
+     * Preserves replay history when readable, but lets an explicit user removal
+     * recover from ciphertext or keystore failures that make normal clear impossible.
+     */
+    @Synchronized
+    fun removeProvisioning() {
+        try {
+            storage.clear()
+        } catch (clearFailure: ReservationStorageException) {
+            try {
+                storage.purge()
+            } catch (purgeFailure: ReservationStorageException) {
+                if (clearFailure !== purgeFailure) {
+                    clearFailure.addSuppressed(purgeFailure)
+                }
+                throw clearFailure
+            }
+        }
+    }
+
     @Synchronized
     fun purge() {
         storage.purge()

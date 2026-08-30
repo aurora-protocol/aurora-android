@@ -1,14 +1,5 @@
 package org.aurora.protocol.android
 
-internal data class MainScreenControls(
-    val importInputEnabled: Boolean,
-    val importEnabled: Boolean,
-    val removeProvisioningEnabled: Boolean,
-    val connectEnabled: Boolean,
-    val disconnectEnabled: Boolean,
-    val showProgress: Boolean,
-)
-
 internal fun mainScreenControls(
     importInProgress: Boolean,
     storageOperationInProgress: Boolean,

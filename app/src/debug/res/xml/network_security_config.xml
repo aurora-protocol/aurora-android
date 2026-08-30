@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: this overrides main/res/xml/network_security_config.xml.
+     Lab testing against `auroralab` needs the device to trust its user-installed
+     lab CA for the issuer HTTPS exchange. Release builds keep the strict
+     main config (system anchors only); the release package gate rejects any
+     debug-overrides element in the release APK. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+            <certificates src="system" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

@@ -1,58 +1,44 @@
 package org.aurora.protocol.android
 
-import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.VpnService
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
-import android.text.Editable
-import android.text.InputFilter
-import android.text.InputType
-import android.text.TextWatcher
-import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.view.WindowInsets
-import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import org.aurora.protocol.android.core.AuroraLog
-import org.aurora.protocol.android.core.ProvisioningImport
 
 class AuroraActivity : Activity() {
-    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
-    private lateinit var importField: EditText
-    private lateinit var importButton: Button
-    private lateinit var removeProvisioningButton: Button
-    private lateinit var connectButton: Button
-    private lateinit var disconnectButton: Button
-    private lateinit var progressIndicator: ProgressBar
-    private lateinit var status: TextView
-    private lateinit var requestState: ConnectionRequestState
-    private val importInputLock = Any()
-    private var pendingImport: CharArray? = null
-    private var statusObserver: (() -> Unit)? = null
-    private var storageOperationObserver: (() -> Unit)? = null
-    private var statusObserverGeneration = 0L
-    private var screenResumed = false
-    private lateinit var tunnelStatusRenderState: TunnelStatusRenderState
-    private lateinit var vpnServiceRequestTracker: VpnServiceRequestTracker
-    private val vpnServiceRequestHandler = Handler(Looper.getMainLooper())
-    private val reconcileVpnServiceRequest = Runnable { reconcilePendingVpnServiceRequest() }
-    private val provisioningExpiryMonitor = ProvisioningExpiryMonitor(
+    internal val worker: ExecutorService = Executors.newSingleThreadExecutor()
+    internal lateinit var importField: EditText
+    internal lateinit var importFieldError: TextView
+    internal var defaultImportFieldTextColor = android.graphics.Color.BLACK
+    internal lateinit var importButton: Button
+    internal lateinit var removeProvisioningButton: Button
+    internal lateinit var connectButton: Button
+    internal lateinit var disconnectButton: Button
+    internal lateinit var progressIndicator: ProgressBar
+    internal lateinit var status: TextView
+    internal lateinit var statusLabelText: CharSequence
+    internal lateinit var requestState: ConnectionRequestState
+    internal val importInputLock = Any()
+    internal var pendingImport: CharArray? = null
+    internal var statusObserver: (() -> Unit)? = null
+    internal var storageOperationObserver: (() -> Unit)? = null
+    internal var statusObserverGeneration = 0L
+    internal var screenResumed = false
+    internal var lastRenderedStorageOperation: ProvisioningStorageOperation? = null
+    internal var removeProvisioningDialog: AlertDialog? = null
+    internal lateinit var tunnelStatusRenderState: TunnelStatusRenderState
+    internal lateinit var vpnServiceRequestTracker: VpnServiceRequestTracker
+    internal val vpnServiceRequestHandler = Handler(Looper.getMainLooper())
+    internal val reconcileVpnServiceRequest = Runnable { reconcilePendingVpnServiceRequest() }
+    internal val provisioningExpiryMonitor = ProvisioningExpiryMonitor(
         currentTimeMillis = System::currentTimeMillis,
         schedule = { action, delayMillis -> vpnServiceRequestHandler.postDelayed(action, delayMillis) },
         cancel = vpnServiceRequestHandler::removeCallbacks,
@@ -60,712 +46,48 @@ class AuroraActivity : Activity() {
             (application as AuroraApplication).provisioningAvailability.expireKnownReservation(expiryUnix)
         },
     )
-    private val provisioningStorageOperations: ProvisioningStorageOperations
-        get() = (application as AuroraApplication).provisioningStorageOperations
-    private val storageOperationInProgress: Boolean
-        get() = provisioningStorageOperations.publication.operation != null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        requestState = ConnectionRequestState(
-            restoreConnectionRequest(
-                requested = savedInstanceState?.getBoolean(savedConnectionRequest) == true,
-                restoredProcessSessionId = savedInstanceState?.getString(savedConnectionRequestProcessSession),
-                currentProcessSessionId = vpnServiceProcessSessionId,
-            ),
-        )
-        val initialTunnelStatus = vpnTunnelStatus.publication
-        val initialStorageOperation = provisioningStorageOperations.publication
-        tunnelStatusRenderState = TunnelStatusRenderState(initialTunnelStatus)
-        val restoredCommand = savedInstanceState?.getString(savedVpnServiceCommand)?.let { name ->
-            enumValues<VpnServiceCommand>().firstOrNull { it.name == name }
-        }
-        vpnServiceRequestTracker = VpnServiceRequestTracker(
-            restoredCommand = restoredCommand,
-            restoredAfterStatusRevision = if (savedInstanceState?.containsKey(savedVpnServiceCommandRevision) == true) {
-                savedInstanceState.getLong(savedVpnServiceCommandRevision)
-            } else {
-                null
-            },
-            restoredTimeoutAtUptimeMillis = if (
-                savedInstanceState?.containsKey(savedVpnServiceCommandTimeout) == true
-            ) {
-                savedInstanceState.getLong(savedVpnServiceCommandTimeout)
-            } else {
-                null
-            },
-            restoredConnectRequestId = if (
-                savedInstanceState?.containsKey(savedVpnServiceConnectRequestId) == true
-            ) {
-                savedInstanceState.getLong(savedVpnServiceConnectRequestId)
-            } else {
-                null
-            },
-            restoredProcessSessionId = savedInstanceState?.getString(savedVpnServiceProcessSession),
-            currentStatusRevision = initialTunnelStatus.revision,
-        )
-        setContentView(buildContent(initialTunnelStatus.status, initialStorageOperation.operation))
-        refreshControls()
-        schedulePendingVpnServiceReconciliation()
+        initializeMainScreen(savedInstanceState)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        if (requestState.connectRequested) {
-            outState.putBoolean(savedConnectionRequest, true)
-            outState.putString(savedConnectionRequestProcessSession, vpnServiceProcessSessionId)
-        } else {
-            outState.remove(savedConnectionRequest)
-            outState.remove(savedConnectionRequestProcessSession)
-        }
-        val pendingCommand = vpnServiceRequestTracker.pending
-        if (pendingCommand == null) {
-            outState.remove(savedVpnServiceCommand)
-            outState.remove(savedVpnServiceCommandRevision)
-            outState.remove(savedVpnServiceCommandTimeout)
-            outState.remove(savedVpnServiceConnectRequestId)
-            outState.remove(savedVpnServiceProcessSession)
-        } else {
-            outState.putString(savedVpnServiceCommand, pendingCommand.command.name)
-            outState.putLong(savedVpnServiceCommandRevision, pendingCommand.afterStatusRevision)
-            outState.putLong(savedVpnServiceCommandTimeout, pendingCommand.timeoutAtUptimeMillis)
-            val connectRequestId = pendingCommand.connectRequestId
-            if (connectRequestId == null) {
-                outState.remove(savedVpnServiceConnectRequestId)
-            } else {
-                outState.putLong(savedVpnServiceConnectRequestId, connectRequestId)
-            }
-            outState.putString(savedVpnServiceProcessSession, vpnServiceProcessSessionId)
-        }
+        saveActivityState(outState)
         super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
         super.onResume()
-        screenResumed = true
-        val generation = ++statusObserverGeneration
-        val observation = vpnTunnelStatus.observeCurrentPublication { update ->
-            runOnUiThread {
-                if (generation == statusObserverGeneration) {
-                    renderTunnelStatus(update)
-                }
-            }
-        }
-        // Revision gating catches even an away-and-back transition while
-        // preserving local feedback when no newer publication exists.
-        renderTunnelStatus(observation.publication)
-        statusObserver = observation.unsubscribe
-        val storageObservation = provisioningStorageOperations.observeCurrent { update ->
-            runOnUiThread {
-                if (generation == statusObserverGeneration) {
-                    renderStorageOperation(update)
-                }
-            }
-        }
-        renderStorageOperation(storageObservation.publication)
-        storageOperationObserver = storageObservation.unsubscribe
-        val mayRefreshProvisioning = provisioningRefreshAllowed(
-            importInProgress = requestState.importInProgress,
-            storageOperationInProgress = storageOperationInProgress,
-            connectRequested = requestState.connectRequested,
-            pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
-        )
-        (application as AuroraApplication).provisioningAvailability.onMainScreenResumed(
-            refreshAllowed = mayRefreshProvisioning,
-        )
-        refreshProvisioningExpiryMonitor()
+        resumeMainScreenObservers()
     }
 
     override fun onPause() {
-        screenResumed = false
-        provisioningExpiryMonitor.stop()
-        ++statusObserverGeneration
-        statusObserver?.invoke()
-        statusObserver = null
-        storageOperationObserver?.invoke()
-        storageOperationObserver = null
+        pauseMainScreenObservers()
         super.onPause()
     }
 
     override fun onDestroy() {
-        vpnServiceRequestHandler.removeCallbacks(reconcileVpnServiceRequest)
-        provisioningExpiryMonitor.stop()
-        worker.shutdownNow()
-            .filterIsInstance<ProvisioningStorageCommand>()
-            .forEach(ProvisioningStorageCommand::discardIfQueued)
-        synchronized(importInputLock) {
-            pendingImport?.fill('\u0000')
-            pendingImport = null
-        }
+        destroyMainScreenResources()
         super.onDestroy()
     }
 
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != requestVpnPermission || !requestState.consumeConnectionRequest()) {
-            return
-        }
-        refreshControls()
-        if (resultCode == RESULT_OK) {
-            startConnection()
-        } else {
-            showLocalStatus(R.string.status_vpn_permission_required)
-        }
+        handleActivityResult(requestCode, resultCode, data)
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != requestNotifications || !requestState.connectRequested) {
-            return
-        }
-        if (permissions.size != 1 ||
-            permissions[0] != Manifest.permission.POST_NOTIFICATIONS ||
-            grantResults.size != permissions.size
-        ) {
-            requestState.cancelConnectionRequest()
-            showLocalStatus(R.string.status_permission_request_failed)
-            refreshControls()
-            return
-        }
-        // Notification permission is optional for foreground-service startup,
-        // so an explicit denial must not prevent the requested VPN connection.
-        requestVpnPreparation()
+        handleRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
-    private fun buildContent(
-        initialTunnelStatus: TunnelStatus,
-        initialStorageOperation: ProvisioningStorageOperation?,
-    ): View {
-        val contentPadding = dp(24)
-        val itemSpacing = dp(12)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        importField = EditText(this).apply {
-            id = View.generateViewId()
-            isSaveEnabled = false
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
-            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                importantForContentCapture = View.IMPORTANT_FOR_CONTENT_CAPTURE_NO
-            }
-            filters = arrayOf(InputFilter.LengthFilter(ProvisioningImport.maximumEncodedCharacters))
-            setHint(R.string.provisioning_import_hint)
-            setSingleLine(false)
-            minLines = 4
-        }
-        val importLabel = TextView(this).apply {
-            setText(R.string.provisioning_import_label)
-            labelFor = importField.id
-        }
-        status = TextView(this).apply {
-            id = View.generateViewId()
-            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
-            setText(
-                when {
-                    requestState.connectRequested -> R.string.status_waiting_for_permission
-                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.status_connecting
-                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT -> {
-                        R.string.status_disconnect_requested
-                    }
-                    initialStorageOperation == ProvisioningStorageOperation.IMPORTING -> R.string.status_importing
-                    initialStorageOperation == ProvisioningStorageOperation.REMOVING -> {
-                        R.string.status_removing_provisioning
-                    }
-                    else -> tunnelStatusText(initialTunnelStatus)
-                },
-            )
-        }
-        val statusLabel = TextView(this).apply {
-            setText(R.string.status_label)
-            labelFor = status.id
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                isAccessibilityHeading = true
-            }
-        }
-        progressIndicator = ProgressBar(this).apply {
-            isIndeterminate = true
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            visibility = View.GONE
-        }
-
-        layout.addView(importLabel, matchWidth())
-        layout.addView(importField, matchWidth(dp(4)))
-        importButton = commandButton(R.string.action_import) { importProvisioning() }
-        removeProvisioningButton = commandButton(R.string.action_remove_provisioning) {
-            confirmRemoveProvisioning()
-        }
-        connectButton = commandButton(R.string.action_connect) { connect() }
-        layout.addView(importButton, matchWidth(itemSpacing))
-        layout.addView(removeProvisioningButton, matchWidth(itemSpacing))
-        layout.addView(connectButton, matchWidth(itemSpacing))
-        disconnectButton = commandButton(R.string.action_disconnect) { disconnect() }
-        layout.addView(disconnectButton, matchWidth(itemSpacing))
-        layout.addView(progressIndicator, wrapContent(itemSpacing))
-        layout.addView(statusLabel, matchWidth(itemSpacing))
-        layout.addView(status, matchWidth(dp(4)))
-
-        importField.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
-
-            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
-
-            override fun afterTextChanged(text: Editable?) {
-                refreshControls()
-            }
-        })
-
-        return ScrollView(this).apply {
-            isFillViewport = true
-            addView(layout, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            applySystemWindowInsets(this, contentPadding)
-        }
-    }
-
-    private fun commandButton(label: Int, action: () -> Unit): Button = Button(this).apply {
-        setText(label)
-        setSingleLine(false)
-        setOnClickListener { action() }
-    }
-
-    private fun importProvisioning() {
-        if (!currentControls().importEnabled) {
-            return
-        }
-        if (!requestState.beginImport()) {
-            return
-        }
-        val lease = provisioningStorageOperations.begin(ProvisioningStorageOperation.IMPORTING) ?: run {
-            requestState.completeImport()
-            return
-        }
-        val editable = importField.text
-        if (!ProvisioningImport.hasValidEncodedLength(editable.length)) {
-            editable.clear()
-            requestState.completeImport()
-            provisioningStorageOperations.complete(lease)
-            showLocalStatus(R.string.status_import_failed)
-            refreshControls()
-            return
-        }
-        val encoded = CharArray(editable.length) { editable[it] }
-        editable.clear()
-        synchronized(importInputLock) {
-            pendingImport = encoded
-        }
-        (application as AuroraApplication).provisioningAvailability.invalidate()
-        showLocalStatus(R.string.status_importing)
-        refreshControls()
-        var message = R.string.status_import_failed
-        var importedExpiryUnix: Long? = null
-        val storageCommand = ProvisioningStorageCommand(
-            operations = provisioningStorageOperations,
-            lease = lease,
-            work = {
-                val ownsInput = synchronized(importInputLock) {
-                    if (pendingImport !== encoded) {
-                        false
-                    } else {
-                        pendingImport = null
-                        true
-                    }
-                }
-                if (!ownsInput || Thread.currentThread().isInterrupted) {
-                    encoded.fill('\u0000')
-                } else {
-                    val request = try {
-                        ProvisioningImport.decode(encoded)
-                    } catch (error: IllegalArgumentException) {
-                        AuroraLog.debug("provisioning import", error)
-                        encoded.fill('\u0000')
-                        null
-                    }
-                    if (request != null && !Thread.currentThread().isInterrupted) {
-                        try {
-                            importedExpiryUnix = (application as AuroraApplication).reservations.reserveAndPersist(
-                                request,
-                                System.currentTimeMillis() / 1_000,
-                            )
-                            message = R.string.status_import_succeeded
-                        } catch (error: Exception) {
-                            AuroraLog.debug("provisioning import", error)
-                        } finally {
-                            request.fill(0)
-                        }
-                    }
-                }
-            },
-            afterCompletion = {
-                importedExpiryUnix?.let {
-                    (application as AuroraApplication).provisioningAvailability.recordImportedReservation(it)
-                }
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) {
-                        return@runOnUiThread
-                    }
-                    requestState.completeImport()
-                    showLocalStatus(message)
-                    refreshControls()
-                }
-            },
-        )
-        try {
-            worker.execute(storageCommand)
-        } catch (_: RejectedExecutionException) {
-            synchronized(importInputLock) {
-                if (pendingImport === encoded) {
-                    pendingImport = null
-                }
-                encoded.fill('\u0000')
-            }
-            storageCommand.discardIfQueued()
-            requestState.completeImport()
-            showLocalStatus(R.string.status_import_failed)
-            refreshControls()
-        }
-    }
-
-    private fun connect() {
-        if (!currentControls().connectEnabled) {
-            return
-        }
-        if (!requestState.beginConnectionRequest()) {
-            return
-        }
-        showLocalStatus(R.string.status_waiting_for_permission)
-        refreshControls()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            try {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), requestNotifications)
-            } catch (error: RuntimeException) {
-                failConnectionRequest("notification permission request", error)
-            }
-            return
-        }
-        requestVpnPreparation()
-    }
-
-    private fun confirmRemoveProvisioning() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.remove_provisioning_title)
-            .setMessage(R.string.remove_provisioning_message)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.action_remove_provisioning) { _, _ -> removeProvisioning() }
-            .show()
-    }
-
-    private fun removeProvisioning() {
-        val controls = currentControls()
-        if (!controls.removeProvisioningEnabled) {
-            return
-        }
-        (application as AuroraApplication).provisioningAvailability.invalidate()
-        val lease = provisioningStorageOperations.begin(ProvisioningStorageOperation.REMOVING) ?: return
-        var message = R.string.status_remove_provisioning_failed
-        val storageCommand = ProvisioningStorageCommand(
-            operations = provisioningStorageOperations,
-            lease = lease,
-            work = {
-                message = try {
-                    (application as AuroraApplication).reservations.clear()
-                    R.string.status_provisioning_removed
-                } catch (error: Exception) {
-                    AuroraLog.debug("provisioning removal", error)
-                    R.string.status_remove_provisioning_failed
-                }
-            },
-            afterCompletion = {
-                if (message == R.string.status_provisioning_removed) {
-                    (application as AuroraApplication).provisioningAvailability.recordProvisioningRemoved()
-                }
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) {
-                        return@runOnUiThread
-                    }
-                    showLocalStatus(message)
-                    refreshControls()
-                }
-            },
-        )
-        showLocalStatus(R.string.status_removing_provisioning)
-        refreshControls()
-        try {
-            worker.execute(storageCommand)
-        } catch (error: RejectedExecutionException) {
-            storageCommand.discardIfQueued()
-            showLocalStatus(R.string.status_remove_provisioning_failed)
-            refreshControls()
-        }
-    }
-
-    private fun requestVpnPreparation() {
-        if (!requestState.connectRequested) {
-            return
-        }
-        try {
-            val preparation = VpnService.prepare(this)
-            if (preparation == null) {
-                if (requestState.consumeConnectionRequest()) {
-                    refreshControls()
-                    startConnection()
-                }
-            } else {
-                showLocalStatus(R.string.status_waiting_for_permission)
-                startActivityForResult(preparation, requestVpnPermission)
-            }
-        } catch (error: RuntimeException) {
-            failConnectionRequest("VPN permission request", error)
-        }
-    }
-
-    private fun startConnection() {
-        val requestId = vpnConnectRequestGate.issue()
-        vpnServiceRequestTracker.begin(
-            VpnServiceCommand.CONNECT,
-            vpnTunnelStatus.publication.revision,
-            SystemClock.uptimeMillis(),
-            connectRequestId = requestId,
-        )
-        schedulePendingVpnServiceReconciliation()
-        refreshControls()
-        val failure = runVpnServiceRequest { AuroraVpnService.connect(this, requestId) }
-        if (failure == null) {
-            showLocalStatus(R.string.status_connecting)
-        } else {
-            vpnConnectRequestGate.invalidate(requestId)
-            vpnServiceRequestTracker.clear()
-            schedulePendingVpnServiceReconciliation()
-            AuroraLog.debug("VPN service start", failure)
-            showLocalStatus(R.string.status_connection_failed)
-        }
-        refreshControls()
-    }
-
-    private fun disconnect() {
-        if (!currentControls().disconnectEnabled) {
-            return
-        }
-        val currentStatus = vpnTunnelStatus.publication
-        val pendingConnectRequestId = vpnServiceRequestTracker.pending
-            ?.takeIf { it.command == VpnServiceCommand.CONNECT }
-            ?.connectRequestId
-        requestState.cancelConnectionRequest()
-        pendingConnectRequestId?.let(vpnConnectRequestGate::invalidate)
-        if (vpnServiceRequestTracker.clearIfAcknowledged(currentStatus)) {
-            schedulePendingVpnServiceReconciliation()
-        }
-
-        val connectPending = vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT
-        val tunnelActive = currentStatus.status == TunnelStatus.CONNECTING ||
-            currentStatus.status == TunnelStatus.CONNECTED
-        if (!connectPending && !tunnelActive) {
-            showLocalStatus(tunnelStatusText(currentStatus.status))
-            refreshControls()
-            return
-        }
-
-        vpnServiceRequestTracker.begin(
-            VpnServiceCommand.DISCONNECT,
-            currentStatus.revision,
-            SystemClock.uptimeMillis(),
-            connectRequestId = null,
-        )
-        schedulePendingVpnServiceReconciliation()
-        refreshControls()
-        val failure = runVpnServiceRequest { AuroraVpnService.disconnect(this) }
-        if (failure == null) {
-            showLocalStatus(R.string.status_disconnect_requested)
-        } else {
-            vpnServiceRequestTracker.clear()
-            schedulePendingVpnServiceReconciliation()
-            AuroraLog.debug("VPN service stop", failure)
-            showLocalStatus(R.string.status_disconnect_failed)
-        }
-        refreshControls()
-    }
-
-    private fun failConnectionRequest(operation: String, error: RuntimeException) {
-        AuroraLog.debug(operation, error)
-        requestState.cancelConnectionRequest()
-        showLocalStatus(R.string.status_connection_failed)
-        refreshControls()
-    }
-
-    private fun renderStorageOperation(update: ProvisioningStorageOperationPublication) {
-        when (update.operation) {
-            ProvisioningStorageOperation.IMPORTING -> showLocalStatus(R.string.status_importing)
-            ProvisioningStorageOperation.REMOVING -> showLocalStatus(R.string.status_removing_provisioning)
-            null -> showLocalStatus(
-                when {
-                    requestState.connectRequested -> R.string.status_waiting_for_permission
-                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.status_connecting
-                    vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT -> {
-                        R.string.status_disconnect_requested
-                    }
-                    else -> tunnelStatusText(vpnTunnelStatus.status)
-                },
-            )
-        }
-        refreshControls()
-    }
-
-    private fun renderTunnelStatus(update: TunnelStatusPublication) {
-        if (!tunnelStatusRenderState.consumeIfCurrent(update, vpnTunnelStatus.publication)) {
-            return
-        }
-        if (vpnServiceRequestTracker.clearIfAcknowledged(update)) {
-            schedulePendingVpnServiceReconciliation()
-        }
-        status.setText(tunnelStatusText(update.status))
-        refreshControls()
-    }
-
-    private fun reconcilePendingVpnServiceRequest() {
-        val currentStatus = vpnTunnelStatus.publication
-        if (vpnServiceRequestTracker.clearIfAcknowledged(currentStatus)) {
-            schedulePendingVpnServiceReconciliation()
-            refreshControls()
-            return
-        }
-        val expiredRequest = vpnServiceRequestTracker.expireIfUnacknowledged(
-            currentStatus = currentStatus,
-            currentUptimeMillis = SystemClock.uptimeMillis(),
-        )
-        if (expiredRequest == null) {
-            schedulePendingVpnServiceReconciliation()
-            return
-        }
-        expiredRequest.connectRequestId?.let(vpnConnectRequestGate::invalidate)
-        schedulePendingVpnServiceReconciliation()
-        showLocalStatus(
-            if (expiredRequest.command == VpnServiceCommand.CONNECT) {
-                R.string.status_connection_unconfirmed
-            } else {
-                R.string.status_disconnect_unconfirmed
-            },
-        )
-        refreshControls()
-    }
-
-    private fun schedulePendingVpnServiceReconciliation() {
-        vpnServiceRequestHandler.removeCallbacks(reconcileVpnServiceRequest)
-        val timeoutAt = vpnServiceRequestTracker.pending?.timeoutAtUptimeMillis ?: return
-        vpnServiceRequestHandler.postDelayed(
-            reconcileVpnServiceRequest,
-            maxOf(0L, timeoutAt - SystemClock.uptimeMillis()),
-        )
-    }
-
-    private fun showLocalStatus(message: Int) {
-        tunnelStatusRenderState.markLocalFeedback(vpnTunnelStatus.publication)
-        status.setText(message)
-    }
-
-    private fun refreshControls() {
-        val controls = currentControls()
-        importField.isEnabled = controls.importInputEnabled
-        importButton.isEnabled = controls.importEnabled
-        importButton.setText(if (requestState.importInProgress) R.string.action_importing else R.string.action_import)
-        removeProvisioningButton.isEnabled = controls.removeProvisioningEnabled
-        removeProvisioningButton.setText(
-            if (storageOperationInProgress) R.string.action_removing_provisioning else R.string.action_remove_provisioning,
-        )
-        connectButton.isEnabled = controls.connectEnabled
-        connectButton.setText(
-            when {
-                requestState.connectRequested -> R.string.action_waiting_for_permission
-                vpnServiceRequestTracker.pending?.command == VpnServiceCommand.CONNECT -> R.string.action_connecting
-                else -> R.string.action_connect
-            },
-        )
-        disconnectButton.isEnabled = controls.disconnectEnabled
-        disconnectButton.setText(
-            if (vpnServiceRequestTracker.pending?.command == VpnServiceCommand.DISCONNECT) {
-                R.string.action_disconnecting
-            } else {
-                R.string.action_disconnect
-            },
-        )
-        progressIndicator.visibility = if (controls.showProgress) View.VISIBLE else View.GONE
-        refreshProvisioningExpiryMonitor()
-    }
-
-    private fun refreshProvisioningExpiryMonitor() {
-        val tunnelStatus = vpnTunnelStatus.status
-        val monitorAllowed = screenResumed &&
-            provisioningRefreshAllowed(
-                importInProgress = requestState.importInProgress,
-                storageOperationInProgress = storageOperationInProgress,
-                connectRequested = requestState.connectRequested,
-                pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
-            ) &&
-            (tunnelStatus == TunnelStatus.IDLE || tunnelStatus == TunnelStatus.FAILED)
-        val expiryUnix = if (monitorAllowed) {
-            (application as AuroraApplication).provisioningAvailability.knownReservationExpiryUnix
-        } else {
-            null
-        }
-        provisioningExpiryMonitor.update(expiryUnix)
-    }
-
-    private fun currentControls(): MainScreenControls = mainScreenControls(
-        importInProgress = requestState.importInProgress,
-        storageOperationInProgress = storageOperationInProgress,
-        connectRequested = requestState.connectRequested,
-        pendingVpnServiceCommand = vpnServiceRequestTracker.pending?.command,
-        hasProvisioningInput = importField.text.isNotEmpty(),
-        tunnelStatus = vpnTunnelStatus.status,
-    )
-
-    private fun matchWidth(topMargin: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            this.topMargin = topMargin
-        }
-
-    private fun wrapContent(topMargin: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            this.topMargin = topMargin
-        }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    @Suppress("DEPRECATION")
-    private fun applySystemWindowInsets(view: View, contentPadding: Int) {
-        view.setPadding(contentPadding, contentPadding, contentPadding, contentPadding)
-        view.setOnApplyWindowInsetsListener { target, insets ->
-            val left: Int
-            val top: Int
-            val right: Int
-            val bottom: Int
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
-                val keyboard = insets.getInsets(WindowInsets.Type.ime())
-                left = systemBars.left
-                top = systemBars.top
-                right = systemBars.right
-                bottom = maxOf(systemBars.bottom, keyboard.bottom)
-            } else {
-                left = insets.systemWindowInsetLeft
-                top = insets.systemWindowInsetTop
-                right = insets.systemWindowInsetRight
-                bottom = insets.systemWindowInsetBottom
-            }
-            target.setPadding(
-                contentPadding + left,
-                contentPadding + top,
-                contentPadding + right,
-                contentPadding + bottom,
-            )
-            insets
-        }
-        view.requestApplyInsets()
-    }
-
-    private companion object {
+    internal companion object {
         const val requestNotifications = 1
         const val requestVpnPermission = 2
         const val savedConnectionRequest = "connection-requested"

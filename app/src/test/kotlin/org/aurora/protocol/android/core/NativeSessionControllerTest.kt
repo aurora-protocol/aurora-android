@@ -517,18 +517,21 @@ class NativeSessionControllerTest {
 
     private class BlockingIssuerExchange : CancellableIssuerExchange {
         val started = CountDownLatch(1)
-        @Volatile var cancelled = false
+        private val release = CountDownLatch(1)
+
+        @Volatile
+        var cancelled = false
+            private set
 
         override fun exchange(work: NativeIssuerWork): ByteArray {
             started.countDown()
-            while (!cancelled) {
-                Thread.sleep(10)
-            }
+            release.await()
             throw IllegalStateException("issuer cancelled")
         }
 
         override fun cancel() {
             cancelled = true
+            release.countDown()
         }
     }
 

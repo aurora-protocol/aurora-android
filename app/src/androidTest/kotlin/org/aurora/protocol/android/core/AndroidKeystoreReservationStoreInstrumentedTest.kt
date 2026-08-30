@@ -47,10 +47,11 @@ class AndroidKeystoreReservationStoreInstrumentedTest {
             assertEquals(2_000L, loaded.accessHintExpiryUnix)
         }
 
-        store.consume().use { consumed ->
-            assertNotNull(consumed)
-            requireNotNull(consumed)
-            assertArrayEquals(provisioning, consumed.provisioning)
+        when (val consumption = store.consume(nowUnix = 1_500)) {
+            is ReservationConsumption.Available -> {
+                assertArrayEquals(provisioning, consumption.reservation.provisioning)
+            }
+            else -> throw AssertionError("expected available reservation, got $consumption")
         }
         assertNull(store.load())
 
@@ -90,7 +91,7 @@ class AndroidKeystoreReservationStoreInstrumentedTest {
             store.load()
         }
         assertThrows(ReservationStorageException::class.java) {
-            store.consume()
+            store.consume(nowUnix = 1_500)
         }
     }
 
@@ -102,6 +103,23 @@ class AndroidKeystoreReservationStoreInstrumentedTest {
         assertThrows(ReservationStorageException::class.java) {
             store.load()
         }
+    }
+
+    @Test
+    fun blobStoreRejectsInvalidSizesWithoutReplacingValidCiphertext() {
+        val blobs = AndroidReservationBlobStore(context)
+        val valid = ByteArray(64) { (it + 1).toByte() }
+        blobs.write(valid)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            blobs.write(ByteArray(0))
+        }
+        assertArrayEquals(valid, blobs.read())
+
+        assertThrows(IllegalArgumentException::class.java) {
+            blobs.write(ByteArray((1024 * 1024) + (8 * 1024) + 257))
+        }
+        assertArrayEquals(valid, blobs.read())
     }
 
     private fun reservation(): CoreReservation = CoreReservation(

@@ -6,6 +6,10 @@ import androidx.test.filters.SdkSuppress
 import java.io.FileInputStream
 import java.io.IOException
 import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -72,6 +76,34 @@ class FileDescriptorTunnelDeviceInstrumentedTest {
             assertTrue(failure is IOException)
         } finally {
             pipe[0].close()
+        }
+    }
+
+    @Test
+    fun closeUnblocksAReadWaitingOnTheDescriptor() {
+        val pipe = ParcelFileDescriptor.createPipe()
+        val device = newDevice(pipe[0])
+        val executor = Executors.newSingleThreadExecutor()
+        val readStarted = CountDownLatch(1)
+        val read = executor.submit<ByteArray?> {
+            readStarted.countDown()
+            device.readPacket()
+        }
+        try {
+            assertTrue(readStarted.await(1, TimeUnit.SECONDS))
+            Thread.sleep(100)
+
+            device.close()
+
+            try {
+                assertNull(read.get(2, TimeUnit.SECONDS))
+            } catch (error: ExecutionException) {
+                val invocation = error.cause as? InvocationTargetException
+                assertTrue(invocation?.cause is IOException)
+            }
+        } finally {
+            pipe[1].close()
+            executor.shutdownNow()
         }
     }
 

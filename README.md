@@ -60,6 +60,16 @@ connected (`adb devices`), run them against the debug build:
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
+`LabDriveTest` is skipped during the normal connected suite because it imports
+and consumes live, one-time provisioning on a stateful lab device. Run it only
+on a dedicated device with the intended lab provisioning asset:
+
+```sh
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=org.aurora.protocol.android.LabDriveTest \
+  -Pandroid.testInstrumentationRunnerArguments.auroraLabDrive=true
+```
+
 The run uses the same environment as a local build, including
 `AURORA_CORE_DIR` for the pinned Core checkout. The pipe-descriptor tunnel
 tests require API 33 or later and are skipped on older devices.

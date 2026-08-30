@@ -38,6 +38,19 @@ class ProvisioningImportTest {
     }
 
     @Test
+    fun rejectsNonCanonicalPaddingBitsAndClearsTheInput() {
+        listOf("AR==", "AQJ=").forEach { value ->
+            val encoded = value.toCharArray()
+
+            assertThrows(IllegalArgumentException::class.java) {
+                ProvisioningImport.decode(encoded)
+            }
+
+            assertArrayEquals(CharArray(value.length), encoded)
+        }
+    }
+
+    @Test
     fun clearsRejectedProvisioningCharacters() {
         val encoded = "AQI".toCharArray()
 

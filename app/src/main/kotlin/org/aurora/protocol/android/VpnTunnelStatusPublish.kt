@@ -1,5 +1,7 @@
 package org.aurora.protocol.android
 
+import org.aurora.protocol.android.core.AuroraLog
+
 internal fun VpnTunnelStatus.publish(update: TunnelStatus): TunnelStatusPublication {
     val (published, targets) = synchronized(lock) {
         current = update
@@ -51,8 +53,9 @@ internal fun VpnTunnelStatus.notifyTunnelStatusObservers(
     targets.forEach { observer ->
         try {
             observer(publication)
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
             // Status observation must never break lifecycle publication.
+            AuroraLog.debug("tunnel status observation", error)
         }
     }
 }

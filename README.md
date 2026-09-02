@@ -50,6 +50,22 @@ values, including the fixture's explicit non-production digest. The individual
 scripts under [`scripts/`](scripts/) remain available for running a single
 gate.
 
+Three environment settings must line up for the run to succeed: `JAVA_HOME`
+naming a JDK 17 installation (the script falls back to the Homebrew
+`openjdk@17` location when unset), `ANDROID_SDK_ROOT`/`ANDROID_HOME` naming
+the SDK that contains the pinned NDK 27.1.12297006, and `AURORA_CORE_DIR`
+naming a Core checkout at the revision recorded in `aurora-core.revision`.
+When the default `../aurora-core` checkout has moved ahead of the pin, point
+`AURORA_CORE_DIR` at a checkout that matches it, or the native build and
+release verification fail on the Core revision mismatch:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+  ANDROID_SDK_ROOT="$HOME/Library/Android/sdk" \
+  AURORA_CORE_DIR=../aurora-core-android-pin \
+  ./scripts/aurora-android-check.sh
+```
+
 The framework-bound surface that JVM tests cannot cover — the JNI bridge into
 libauroracore, the keystore-backed reservation store, and the tunnel device's
 real file descriptors — has instrumented tests under

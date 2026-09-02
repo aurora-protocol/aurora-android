@@ -42,7 +42,8 @@ class VpnTunnelStatusStructureTest {
     fun tunnelStatusObserversRemainFaultIsolated() {
         val source = tunnelStatusSources()
 
-        assertTrue(source.contains("catch (_: Throwable)"))
+        assertTrue(source.contains("catch (error: Throwable)"))
+        assertTrue(source.contains("AuroraLog.debug(\"tunnel status observation\", error)"))
         assertTrue(source.contains("observers.removeIf { it === observer }"))
         assertFalse(source.contains("class AuroraActivity"))
     }

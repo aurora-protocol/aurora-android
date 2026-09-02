@@ -21,10 +21,18 @@ import android.util.Log
 internal object AuroraLog {
     const val TAG = "Aurora"
 
-    /** Records [error] under [operation] when the tag is enabled for DEBUG. */
+    /**
+     * Records [error] under [operation] when the tag is enabled for DEBUG.
+     * Never throws: several call sites run inside observers whose failure would
+     * break lifecycle publication, so any platform logging error is swallowed.
+     */
     fun debug(operation: String, error: Throwable) {
-        if (Log.isLoggable(TAG, Log.DEBUG)) {
-            Log.d(TAG, "$operation failed: ${error.javaClass.simpleName}")
+        try {
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "$operation failed: ${error.javaClass.simpleName}")
+            }
+        } catch (_: Exception) {
+            // Diagnostic logging must never propagate.
         }
     }
 }
